@@ -1,0 +1,20 @@
+{
+  "name": "pic-content-system",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "pnpm@10.30.2",
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "prisma:generate": "pnpm --filter @pic/backend prisma:generate",
+    "prisma:validate": "pnpm --filter @pic/backend prisma:validate"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/pg": "^8.20.0",
+    "pg": "^8.21.0",
+    "typescript": "^5.8.0"
+  }
+}

@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root,
+html[data-theme="light"] {
+  --background: #f7f9fb;
+  --surface: #ffffff;
+  --surface-muted: #f1f5f8;
+  --surface-elevated: #ffffff;
+  --foreground: #17212b;
+  --muted-foreground: #657382;
+  --subtle-foreground: #8a97a5;
+  --border: #dbe3ea;
+  --border-hover: #c4d0da;
+  --primary: #00c2c7;
+  --primary-text: #007b80;
+  --primary-muted: #e9fbfb;
+}
+
+html[data-theme="dark"] {
+  --background: #10161d;
+  --surface: #151d26;
+  --surface-muted: #1d2732;
+  --surface-elevated: #202c38;
+  --foreground: #f4f7fa;
+  --muted-foreground: #a8b3be;
+  --subtle-foreground: #7c8a98;
+  --border: #2c3a47;
+  --border-hover: #3b4c5c;
+  --primary: #00c2c7;
+  --primary-text: #8ef4f6;
+  --primary-muted: rgba(0, 194, 199, 0.14);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: var(--background);
+  color: var(--foreground);
+  font-family:
+    Inter,
+    "SF Pro Text",
+    "PingFang SC",
+    "Microsoft YaHei UI",
+    "Microsoft YaHei",
+    system-ui,
+    sans-serif;
+  letter-spacing: 0;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}

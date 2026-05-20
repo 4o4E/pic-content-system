@@ -1,0 +1,159 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MediaType {
+  image
+  video
+  audio
+  text
+  file
+  speak
+  discuss
+  composite
+}
+
+enum AuditState {
+  pending
+  approved
+  rejected
+  archived
+}
+
+enum MediaAssetStatus {
+  pending
+  selected
+  used
+  ignored
+  failed
+}
+
+enum WorkspaceDraftStatus {
+  editing
+  submitted
+  discarded
+}
+
+model MediaFile {
+  md5             String   @id @db.Char(32)
+  storageKey      String   @map("storage_key")
+  mimeType        String?  @map("mime_type")
+  format          String?
+  sizeBytes       BigInt   @map("size_bytes")
+  width           Int?
+  height          Int?
+  durationSeconds Decimal? @map("duration_seconds")
+  metadata        Json     @default("{}")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  assets MediaAsset[]
+
+  @@map("media_file")
+}
+
+model MediaContent {
+  id         String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  type       MediaType
+  title      String?
+  tags       String[]   @default([])
+  elements   Json
+  sign       String     @unique @db.Char(32)
+  auditState AuditState @default(approved) @map("audit_state")
+  likeCount  BigInt     @default(0) @map("like_count")
+  metadata   Json       @default("{}")
+  createdAt  DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  sources SourceBinding[]
+
+  @@index([type])
+  @@index([auditState])
+  @@map("media_content")
+}
+
+model SourceBinding {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  contentId         String?  @map("content_id") @db.Uuid
+  platform          String
+  platformMessageId String?  @map("platform_message_id")
+  platformGroupId   String?  @map("platform_group_id")
+  platformUserId    String?  @map("platform_user_id")
+  platformFileId    String?  @map("platform_file_id")
+  raw               Json     @default("{}")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  content MediaContent? @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  assets  MediaAsset[]
+
+  @@unique([platform, platformMessageId])
+  @@index([platform, platformGroupId])
+  @@index([platform, platformUserId])
+  @@map("source_binding")
+}
+
+model MediaAsset {
+  id        String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  kind      MediaType
+  fileMd5   String?          @map("file_md5") @db.Char(32)
+  element   Json
+  sourceId  String?          @map("source_id") @db.Uuid
+  status    MediaAssetStatus @default(pending)
+  metadata  Json             @default("{}")
+  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  file   MediaFile?     @relation(fields: [fileMd5], references: [md5], onDelete: SetNull)
+  source SourceBinding? @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+
+  @@index([kind])
+  @@index([status, createdAt])
+  @@index([fileMd5])
+  @@map("media_asset")
+}
+
+model WorkspaceDraft {
+  id        String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title     String?
+  tags      String[]             @default([])
+  elements  Json                 @default("[]")
+  assetIds  String[]             @default([]) @map("asset_ids") @db.Uuid
+  status    WorkspaceDraftStatus @default(editing)
+  metadata  Json                 @default("{}")
+  createdAt DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status, updatedAt])
+  @@map("workspace_draft")
+}
+
+model ContentTag {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  contentId String   @map("content_id") @db.Uuid
+  tag       String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([contentId, tag])
+  @@index([tag])
+  @@map("content_tag")
+}
+
+model IngestEvent {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  source          String
+  status          String
+  platform        String
+  platformEventId String?  @map("platform_event_id")
+  payload         Json     @default("{}")
+  error           String?
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([source, status])
+  @@index([platform, platformEventId])
+  @@map("ingest_event")
+}

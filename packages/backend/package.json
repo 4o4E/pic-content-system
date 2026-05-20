@@ -1,0 +1,28 @@
+{
+  "name": "@pic/backend",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "prisma:generate": "prisma generate",
+    "prisma:validate": "prisma validate",
+    "prisma:migrate": "prisma migrate dev",
+    "import:old-pic": "tsx scripts/import-old-pic.ts"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.0.0",
+    "@pic/shared": "workspace:*",
+    "@prisma/client": "^6.8.0",
+    "fastify": "^5.3.0"
+  },
+  "devDependencies": {
+    "prisma": "^6.8.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0"
+  }
+}

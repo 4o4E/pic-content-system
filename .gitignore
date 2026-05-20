@@ -1,0 +1,12 @@
+node_modules
+dist
+build
+.logs
+data
+.env
+.env.*
+!.env.example
+.pnpm-store
+coverage
+*.tsbuildinfo
+packages/backend/prisma/generated

@@ -1,6 +1,7 @@
 import type {
   ApiResp,
   AuthSessionDto,
+  BatchUpdateMediaTagsDto,
   CreateIngestEventDto,
   CreateMediaAssetDto,
   CreateMediaContentDto,
@@ -117,6 +118,13 @@ export function listMedia(query: MediaQuery = {}) {
 export function createMedia(body: CreateMediaContentDto) {
   return request<MediaContentDto>("/api/media", {
     method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function batchUpdateMediaTags(body: BatchUpdateMediaTagsDto) {
+  return request<MediaContentDto[]>("/api/media/tags", {
+    method: "PATCH",
     body: JSON.stringify(body),
   });
 }

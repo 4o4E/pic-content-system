@@ -1,6 +1,6 @@
 import type { IngestEventDto, MediaAssetDto, MediaAssetStatus, MediaContentDto, MediaElement, MediaType, TagDto, WorkspaceDraftDto } from "@pic/shared";
 import type { LucideIcon } from "lucide-react";
-import { useEffect, useState, type DragEvent } from "react";
+import { useEffect, useState, type CSSProperties, type DragEvent } from "react";
 import {
   Archive,
   CheckCircle2,
@@ -10,9 +10,11 @@ import {
   Database,
   FileAudio,
   FileText,
+  FileVideo,
   Filter,
   FolderInput,
   Image,
+  LayoutDashboard,
   Layers3,
   ListChecks,
   Moon,
@@ -30,6 +32,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import {
+  batchUpdateMediaTags,
   clearStoredToken,
   createMedia,
   fileUrl,
@@ -43,8 +46,9 @@ import {
 } from "@/api/client";
 
 type ThemeMode = "light" | "dark";
-type PageKey = "workspace" | "library" | "events" | "tags";
+type PageKey = "home" | "workspace" | "library" | "events" | "tags";
 type TagMode = "and" | "or";
+type ContentCardSize = "small" | "medium" | "large";
 
 interface MediaFilters {
   query: string;
@@ -53,6 +57,7 @@ interface MediaFilters {
 }
 
 const pageItems: Array<{ key: PageKey; label: string; icon: LucideIcon }> = [
+  { key: "home", label: "主页", icon: LayoutDashboard },
   { key: "workspace", label: "工作台", icon: Layers3 },
   { key: "library", label: "内容库", icon: Database },
   { key: "events", label: "接入事件", icon: ListChecks },
@@ -77,6 +82,26 @@ const kindOptions: Array<{ label: string; value: MediaType | "all" }> = [
   { label: "文件", value: "file" },
 ];
 
+const contentCardSizeOptions: Array<{ label: string; value: ContentCardSize; minWidth: string }> = [
+  { label: "小", value: "small", minWidth: "200px" },
+  { label: "中", value: "medium", minWidth: "260px" },
+  { label: "大", value: "large", minWidth: "340px" },
+];
+
+const pagePaths: Record<PageKey, string> = {
+  home: "/",
+  workspace: "/workspace",
+  library: "/library",
+  events: "/events",
+  tags: "/tags",
+};
+
+const defaultMediaFilters: MediaFilters = {
+  query: "",
+  status: "all",
+  kind: "all",
+};
+
 function now() {
   return new Date().toISOString();
 }
@@ -93,6 +118,105 @@ function createEmptyDraft(): WorkspaceDraftDto {
     createdAt: time,
     updatedAt: time,
   };
+}
+
+function isContentCardSize(value: string | null): value is ContentCardSize {
+  return contentCardSizeOptions.some((option) => option.value === value);
+}
+
+function isMediaAssetStatusFilter(value: string | null): value is MediaAssetStatus | "all" {
+  return statusOptions.some((option) => option.value === value);
+}
+
+function isMediaKindFilter(value: string | null): value is MediaType | "all" {
+  return kindOptions.some((option) => option.value === value);
+}
+
+function tagMatchesKeyword(tag: TagDto, keyword: string) {
+  return tag.name.toLowerCase().includes(keyword.toLowerCase());
+}
+
+function parseTagInput(value: string) {
+  return Array.from(new Set(value.split(/[，,\s]+/).map((tag) => tag.trim()).filter(Boolean)));
+}
+
+function pageFromPath(pathname: string): PageKey {
+  const normalized = pathname.replace(/\/+$/, "") || "/";
+  return (Object.entries(pagePaths).find(([, path]) => path === normalized)?.[0] as PageKey | undefined) ?? "home";
+}
+
+function tagsFromParam(value: string | null) {
+  return value?.split(",").map((tag) => tag.trim()).filter(Boolean) ?? [];
+}
+
+function setSearchParam(params: URLSearchParams, key: string, value: string | undefined) {
+  if (value) params.set(key, value);
+  else params.delete(key);
+}
+
+function replaceRouteQuery(pathname: string, entries: Record<string, string | undefined>) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(entries)) setSearchParam(params, key, value);
+  const query = params.toString();
+  window.history.replaceState(null, "", `${pathname}${query ? `?${query}` : ""}`);
+}
+
+function readWorkspaceFiltersFromUrl(): MediaFilters {
+  const params = new URLSearchParams(window.location.search);
+  const status = params.get("status");
+  const kind = params.get("kind");
+  return {
+    query: params.get("q") ?? "",
+    status: isMediaAssetStatusFilter(status) ? status : defaultMediaFilters.status,
+    kind: isMediaKindFilter(kind) ? kind : defaultMediaFilters.kind,
+  };
+}
+
+function updateWorkspaceQuery(filters: MediaFilters) {
+  replaceRouteQuery(pagePaths.workspace, {
+    q: filters.query.trim() || undefined,
+    status: filters.status === "all" ? undefined : filters.status,
+    kind: filters.kind === "all" ? undefined : filters.kind,
+  });
+}
+
+function readLibraryStateFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const tagMode = params.get("tagMode");
+  const card = params.get("card");
+  return {
+    query: params.get("q") ?? "",
+    selectedTags: tagsFromParam(params.get("tags")),
+    tagQuery: params.get("tagInput") ?? "",
+    mode: tagMode === "or" ? "or" : "and",
+    cardSize: isContentCardSize(card) ? card : "medium",
+  } satisfies {
+    query: string;
+    selectedTags: string[];
+    tagQuery: string;
+    mode: TagMode;
+    cardSize: ContentCardSize;
+  };
+}
+
+function updateLibraryQuery(state: { query: string; selectedTags: string[]; tagQuery: string; mode: TagMode; cardSize: ContentCardSize }) {
+  replaceRouteQuery(pagePaths.library, {
+    q: state.query.trim() || undefined,
+    tags: state.selectedTags.length > 0 ? state.selectedTags.join(",") : undefined,
+    tagInput: state.tagQuery.trim() || undefined,
+    tagMode: state.mode === "and" ? undefined : state.mode,
+    card: state.cardSize === "medium" ? undefined : state.cardSize,
+  });
+}
+
+function readTagSearchFromUrl() {
+  return new URLSearchParams(window.location.search).get("q") ?? "";
+}
+
+function updateTagSearchQuery(query: string) {
+  replaceRouteQuery(pagePaths.tags, {
+    q: query.trim() || undefined,
+  });
 }
 
 function elementSummary(element: MediaElement) {
@@ -128,6 +252,19 @@ function elementLabel(element: MediaElement) {
     case "discuss":
       return "聊天记录";
   }
+}
+
+function textPreview(content: string) {
+  const firstPart = content
+    .split(/\r?\n\s*\r?\n|\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!firstPart) return "空文本";
+  return firstPart.length > 160 ? `${firstPart.slice(0, 160)}...` : firstPart;
+}
+
+function elementToken(element: MediaElement) {
+  return `[${elementLabel(element)}]`;
 }
 
 function StatusBadge({ status }: { status: MediaAssetStatus }) {
@@ -184,7 +321,7 @@ function SelectField<T extends string>({
 
 function Sidebar({ page, onPageChange }: { page: PageKey; onPageChange: (page: PageKey) => void }) {
   return (
-    <aside className="hidden w-60 shrink-0 border-r border-border bg-surface px-3 py-4 lg:block">
+    <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 overflow-y-auto border-r border-border bg-surface px-3 py-4 lg:block">
       <div className="mb-6 flex items-center gap-2 px-2">
         <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-[#062426]">
           <FolderInput className="h-5 w-5" />
@@ -218,28 +355,36 @@ function TopBar({
   onFiltersChange,
   theme,
   onThemeChange,
+  showFilters,
+  onLogout,
 }: {
   filters: MediaFilters;
   onFiltersChange: (filters: MediaFilters) => void;
   theme: ThemeMode;
   onThemeChange: (theme: ThemeMode) => void;
+  showFilters: boolean;
+  onLogout: () => void;
 }) {
   return (
-    <header className="flex h-14 items-center justify-between border-b border-border bg-surface px-4">
+    <header className="fixed left-0 right-0 top-0 z-20 flex h-14 items-center justify-between border-b border-border bg-surface px-4 lg:left-60">
       <div className="flex min-w-0 items-center gap-3">
-        <div className="relative hidden sm:block">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-subtle-foreground" />
-          <input
-            className="h-9 w-80 rounded-md border border-border bg-surface pl-9 pr-3 text-sm text-foreground outline-none transition-colors placeholder:text-subtle-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
-            placeholder="搜索素材、tag、来源或 MD5"
-            value={filters.query}
-            onChange={(event) => onFiltersChange({ ...filters, query: event.target.value })}
-          />
-        </div>
-        <Button variant="secondary">
-          <Filter className="h-4 w-4" />
-          筛选
-        </Button>
+        {showFilters && (
+          <>
+            <div className="relative hidden sm:block">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-subtle-foreground" />
+              <input
+                className="h-9 w-80 rounded-md border border-border bg-surface pl-9 pr-3 text-sm text-foreground outline-none transition-colors placeholder:text-subtle-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
+                placeholder="搜索素材、tag、来源或 MD5"
+                value={filters.query}
+                onChange={(event) => onFiltersChange({ ...filters, query: event.target.value })}
+              />
+            </div>
+            <Button variant="secondary">
+              <Filter className="h-4 w-4" />
+              筛选
+            </Button>
+          </>
+        )}
       </div>
       <div className="flex items-center gap-2">
         <Button variant={theme === "light" ? "secondary" : "ghost"} className="h-9 w-9 px-0" aria-label="浅色主题" onClick={() => onThemeChange("light")}>
@@ -250,6 +395,9 @@ function TopBar({
         </Button>
         <Button variant="ghost" className="h-9 w-9 px-0" aria-label="设置">
           <Settings className="h-4 w-4" />
+        </Button>
+        <Button variant="ghost" onClick={onLogout}>
+          退出
         </Button>
       </div>
     </header>
@@ -281,11 +429,99 @@ function AssetPreview({ element }: { element: MediaElement }) {
     return <img className="h-full w-full object-cover" src={fileUrl(element.id)} alt="素材预览" loading="lazy" />;
   }
 
+  if (element.type === "video") {
+    return (
+      <div className="flex h-full items-center justify-center bg-surface-muted">
+        <FileVideo className="h-10 w-10 text-primary" />
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full items-center justify-center bg-[linear-gradient(135deg,var(--surface-muted),var(--surface))]">
       <Image className="h-10 w-10 text-primary" />
     </div>
   );
+}
+
+function SingleContentPreview({ element }: { element: MediaElement }) {
+  if (element.type === "image") {
+    return (
+      <div className="h-full overflow-hidden rounded-md border border-border bg-surface-muted">
+        <img className="h-full w-full object-contain" src={fileUrl(element.id)} alt="图片内容预览" loading="lazy" />
+      </div>
+    );
+  }
+
+  if (element.type === "video") {
+    return (
+      <div className="h-full overflow-hidden rounded-md border border-border bg-black">
+        <video className="h-full w-full object-contain" src={fileUrl(element.id)} autoPlay muted loop playsInline controls />
+      </div>
+    );
+  }
+
+  if (element.type === "audio") {
+    return (
+      <div className="flex h-full min-h-0 items-center gap-3 rounded-md border border-border bg-surface-muted p-4">
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-surface">
+          <FileAudio className="h-6 w-6 text-primary" />
+        </div>
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-foreground">音频内容</div>
+          <div className="mt-1 truncate font-mono text-xs text-subtle-foreground">{element.id}</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (element.type === "text") {
+    return <div className="h-full overflow-hidden rounded-md border border-border bg-surface-muted p-3 text-sm leading-6 text-muted-foreground">{textPreview(element.content)}</div>;
+  }
+
+  if (element.type === "file") {
+    return (
+      <div className="flex h-full min-h-0 items-center gap-3 rounded-md border border-border bg-surface-muted p-4">
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-surface">
+          <FileText className="h-6 w-6 text-primary" />
+        </div>
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-foreground">文件内容</div>
+          <div className="mt-1 truncate font-mono text-xs text-subtle-foreground">{element.id}</div>
+        </div>
+      </div>
+    );
+  }
+
+  return <CompositeContentPreview elements={[element]} />;
+}
+
+function CompositeContentPreview({ elements }: { elements: MediaElement[] }) {
+  return (
+    <div className="h-full overflow-hidden rounded-md border border-border bg-surface-muted p-3">
+      <div className="mb-2 flex max-h-14 flex-wrap gap-2 overflow-hidden">
+        {elements.map((element, index) => (
+          <Badge key={`${element.type}-${index}-${elementSummary(element)}`} className="border-primary/30 bg-primary-muted text-primary-text">
+            {elementToken(element)}
+          </Badge>
+        ))}
+      </div>
+      <div className="overflow-hidden text-sm leading-6 text-muted-foreground">
+        {elements
+          .filter((element): element is Extract<MediaElement, { type: "text" }> => element.type === "text")
+          .map((element) => textPreview(element.content))
+          .join(" / ") || "复合内容中的媒体文件已用类型标记展示。"}
+      </div>
+    </div>
+  );
+}
+
+function ContentPreview({ content }: { content: MediaContentDto }) {
+  if (content.elements.length === 1 && content.type !== "composite") {
+    const [element] = content.elements;
+    if (element) return <SingleContentPreview element={element} />;
+  }
+  return <CompositeContentPreview elements={content.elements} />;
 }
 
 function MaterialCard({
@@ -551,13 +787,28 @@ function WorkspacePage({
 }
 
 function ContentLibraryPage() {
-  const [query, setQuery] = useState("");
-  const [selectedTags, setSelectedTags] = useState<string[]>([]);
-  const [mode, setMode] = useState<TagMode>("and");
+  const initialRouteState = readLibraryStateFromUrl();
+  const [query, setQuery] = useState(initialRouteState.query);
+  const [selectedTags, setSelectedTags] = useState<string[]>(initialRouteState.selectedTags);
+  const [tagQuery, setTagQuery] = useState(initialRouteState.tagQuery);
+  const [tagSuggestions, setTagSuggestions] = useState<TagDto[]>([]);
+  const [mode, setMode] = useState<TagMode>(initialRouteState.mode);
+  const [cardSize, setCardSize] = useState<ContentCardSize>(initialRouteState.cardSize);
   const [tags, setTags] = useState<TagDto[]>([]);
   const [contents, setContents] = useState<MediaContentDto[]>([]);
+  const [selectedContentIds, setSelectedContentIds] = useState<string[]>([]);
+  const [batchAddTags, setBatchAddTags] = useState("");
+  const [batchRemoveTags, setBatchRemoveTags] = useState("");
   const [total, setTotal] = useState(0);
   const [error, setError] = useState("");
+  const cardMinWidth = contentCardSizeOptions.find((option) => option.value === cardSize)?.minWidth ?? "260px";
+  const gridStyle: CSSProperties = {
+    gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${cardMinWidth}), 1fr))`,
+  };
+  const commonTags = tags.slice(0, 10);
+  const visibleTagSuggestions = tagQuery.trim()
+    ? tagSuggestions.filter((tag) => !selectedTags.includes(tag.name)).slice(0, 8)
+    : [];
 
   useEffect(() => {
     listTags()
@@ -565,18 +816,94 @@ function ContentLibraryPage() {
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载 tag 失败"));
   }, []);
 
+  async function refreshContents() {
+    const page = await listMedia({ q: query, tags: selectedTags, tagMode: mode, size: 80 });
+    setContents(page.data);
+    setTotal(page.total);
+    setSelectedContentIds((current) => {
+      const visibleIds = new Set(page.data.map((content) => content.id));
+      return current.filter((id) => visibleIds.has(id));
+    });
+    setError("");
+  }
+
   useEffect(() => {
-    listMedia({ q: query, tags: selectedTags, tagMode: mode, size: 80 })
-      .then((page) => {
-        setContents(page.data);
-        setTotal(page.total);
-        setError("");
+    function syncRouteState() {
+      const next = readLibraryStateFromUrl();
+      setQuery(next.query);
+      setSelectedTags(next.selectedTags);
+      setTagQuery(next.tagQuery);
+      setMode(next.mode);
+      setCardSize(next.cardSize);
+    }
+
+    window.addEventListener("popstate", syncRouteState);
+    return () => window.removeEventListener("popstate", syncRouteState);
+  }, []);
+
+  useEffect(() => {
+    updateLibraryQuery({ query, selectedTags, tagQuery, mode, cardSize });
+  }, [cardSize, mode, query, selectedTags, tagQuery]);
+
+  useEffect(() => {
+    const keyword = tagQuery.trim();
+    if (!keyword) {
+      setTagSuggestions([]);
+      return;
+    }
+
+    let ignore = false;
+    listTags(keyword)
+      .then((rows) => {
+        if (!ignore) setTagSuggestions(rows.filter((tag) => tagMatchesKeyword(tag, keyword)));
       })
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "搜索 tag 失败"));
+    return () => {
+      ignore = true;
+    };
+  }, [tagQuery]);
+
+  useEffect(() => {
+    refreshContents()
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载内容库失败"));
   }, [mode, query, selectedTags]);
 
-  function toggleTag(tag: string) {
+  function addTag(tag: string) {
+    setSelectedTags((current) => (current.includes(tag) ? current : [...current, tag]));
+    setTagQuery("");
+    setTagSuggestions([]);
+  }
+
+  function removeTag(tag: string) {
+    setSelectedTags((current) => current.filter((item) => item !== tag));
+  }
+
+  function toggleCommonTag(tag: string) {
     setSelectedTags((current) => (current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]));
+  }
+
+  function toggleContentSelection(id: string) {
+    setSelectedContentIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
+  }
+
+  async function submitBatchTagUpdate() {
+    const addTags = parseTagInput(batchAddTags);
+    const removeTags = parseTagInput(batchRemoveTags);
+    if (selectedContentIds.length === 0 || (addTags.length === 0 && removeTags.length === 0)) return;
+
+    try {
+      await batchUpdateMediaTags({
+        ids: selectedContentIds,
+        addTags,
+        removeTags,
+      });
+      setBatchAddTags("");
+      setBatchRemoveTags("");
+      await refreshContents();
+      setTags(await listTags());
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "批量更新 tag 失败");
+    }
   }
 
   return (
@@ -604,47 +931,170 @@ function ContentLibraryPage() {
               OR
             </Button>
           </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground">卡片</span>
+            <div className="flex rounded-md border border-border bg-surface p-1">
+              {contentCardSizeOptions.map((option) => (
+                <Button
+                  key={option.value}
+                  className="h-7 px-2"
+                  variant={cardSize === option.value ? "primary" : "ghost"}
+                  onClick={() => setCardSize(option.value)}
+                >
+                  {option.label}
+                </Button>
+              ))}
+            </div>
+          </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          {tags.map((tag) => (
+          <span className="flex h-7 items-center text-xs text-muted-foreground">常用 tag</span>
+          {commonTags.map((tag) => (
             <button
               key={tag.name}
               className={cn(
-                "h-7 rounded-full border px-3 text-xs font-medium transition-colors",
+                "h-7 whitespace-nowrap rounded-full border px-3 text-xs font-medium transition-colors",
                 selectedTags.includes(tag.name)
                   ? "border-primary/40 bg-primary-muted text-primary-text"
                   : "border-border bg-surface-muted text-muted-foreground hover:border-border-hover",
               )}
-              onClick={() => toggleTag(tag.name)}
+              onClick={() => toggleCommonTag(tag.name)}
             >
               {tag.name} · {tag.count}
             </button>
           ))}
         </div>
+        <div className="space-y-2">
+          <div className="flex min-h-10 flex-wrap items-center gap-2 rounded-md border border-border bg-surface px-2 py-1 focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20">
+            {selectedTags.map((tag) => (
+              <button
+                key={tag}
+                className="inline-flex h-7 items-center gap-1 rounded-full border border-primary/40 bg-primary-muted px-2 text-xs font-medium text-primary-text"
+                onClick={() => removeTag(tag)}
+                type="button"
+              >
+                {tag}
+                <X className="h-3 w-3" />
+              </button>
+            ))}
+            <input
+              className="h-7 min-w-[180px] flex-1 bg-transparent text-sm outline-none placeholder:text-subtle-foreground"
+              placeholder={selectedTags.length === 0 ? "输入 tag 名称搜索并选择" : "继续输入 tag"}
+              value={tagQuery}
+              onChange={(event) => setTagQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Backspace" && tagQuery.length === 0) {
+                  setSelectedTags((current) => current.slice(0, -1));
+                }
+              }}
+            />
+          </div>
+          {visibleTagSuggestions.length > 0 && (
+            <div className="flex flex-wrap gap-2 rounded-md border border-border bg-surface-muted p-2">
+              {visibleTagSuggestions.map((tag) => (
+                <button
+                  key={tag.name}
+                  className="h-7 rounded-full border border-border bg-surface px-3 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary-text"
+                  onClick={() => addTag(tag.name)}
+                  type="button"
+                >
+                  {tag.name} · {tag.count}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <div className="text-xs text-subtle-foreground">当前条件匹配 {total} 条，展示前 {contents.length} 条。</div>
       </Card>
+      {selectedContentIds.length > 0 && (
+        <Card className="space-y-3 border-primary/30 bg-primary-muted/40 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold">已选择 {selectedContentIds.length} 条内容</div>
+              <div className="mt-1 text-xs text-muted-foreground">批量添加或移除 tag，多个 tag 可用逗号、空格分隔。</div>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="secondary" onClick={() => setSelectedContentIds(contents.map((content) => content.id))}>
+                选择本页
+              </Button>
+              <Button variant="ghost" onClick={() => setSelectedContentIds([])}>
+                清空选择
+              </Button>
+            </div>
+          </div>
+          <div className="grid gap-3 lg:grid-cols-[1fr_1fr_auto]">
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-muted-foreground">添加 tag</span>
+              <input
+                className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                placeholder="例如：猫猫, 表情"
+                value={batchAddTags}
+                onChange={(event) => setBatchAddTags(event.target.value)}
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-muted-foreground">移除 tag</span>
+              <input
+                className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                placeholder="例如：待整理"
+                value={batchRemoveTags}
+                onChange={(event) => setBatchRemoveTags(event.target.value)}
+              />
+            </label>
+            <div className="flex items-end">
+              <Button
+                className="w-full lg:w-auto"
+                disabled={parseTagInput(batchAddTags).length === 0 && parseTagInput(batchRemoveTags).length === 0}
+                variant="primary"
+                onClick={() => void submitBatchTagUpdate()}
+              >
+                应用到已选
+              </Button>
+            </div>
+          </div>
+        </Card>
+      )}
       {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
-      <div className="grid gap-3 lg:grid-cols-2">
+      <div className="grid gap-3" style={gridStyle}>
         {contents.map((content) => (
-          <Card key={content.id} className="p-4">
-            <div className="flex items-start justify-between gap-3">
+          <Card
+            key={content.id}
+            className={cn(
+              "flex aspect-square min-h-0 flex-col overflow-hidden p-3",
+              selectedContentIds.includes(content.id) && "border-primary bg-primary-muted/40",
+            )}
+          >
+            <div className="flex shrink-0 items-start justify-between gap-3">
               <div className="min-w-0">
-                <h2 className="truncate text-base font-semibold">{content.title ?? "未命名内容"}</h2>
+                <h2 className="truncate text-sm font-semibold">{content.title ?? "未命名内容"}</h2>
                 <p className="mt-1 font-mono text-xs text-subtle-foreground">{content.sign}</p>
               </div>
-              <Badge className={content.auditState === "approved" ? "border-green-500/30 bg-green-500/10 text-green-600 dark:text-green-400" : ""}>
-                {content.auditState}
-              </Badge>
+              <div className="flex shrink-0 items-center gap-2">
+                <Badge className={content.auditState === "approved" ? "border-green-500/30 bg-green-500/10 text-green-600 dark:text-green-400" : ""}>
+                  {content.auditState}
+                </Badge>
+                <button
+                  className={cn(
+                    "flex h-7 w-7 items-center justify-center rounded-md border border-border bg-surface text-subtle-foreground transition-colors hover:border-primary/40 hover:text-primary-text",
+                    selectedContentIds.includes(content.id) && "border-primary/40 bg-primary text-[#062426]",
+                  )}
+                  onClick={() => toggleContentSelection(content.id)}
+                  type="button"
+                  aria-label={selectedContentIds.includes(content.id) ? "取消选择内容" : "选择内容"}
+                >
+                  <CheckCircle2 className="h-4 w-4" />
+                </button>
+              </div>
             </div>
-            <div className="mt-3 flex flex-wrap gap-2">
+            <div className="mt-2 flex max-h-14 shrink-0 flex-wrap gap-1 overflow-hidden">
               {content.tags.map((tag) => (
                 <Badge key={tag} className="border-primary/30 bg-primary-muted text-primary-text">
                   {tag}
                 </Badge>
               ))}
             </div>
-            <div className="mt-3 rounded-md border border-border bg-surface-muted p-3 text-sm text-muted-foreground">
-              {content.elements.map(elementSummary).join(" / ")}
+            <div className="mt-2 min-h-0 flex-1">
+              <ContentPreview content={content} />
             </div>
           </Card>
         ))}
@@ -655,9 +1105,22 @@ function ContentLibraryPage() {
 }
 
 function TagManagementPage() {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(readTagSearchFromUrl);
   const [tags, setTags] = useState<TagDto[]>([]);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    function syncRouteState() {
+      setQuery(readTagSearchFromUrl());
+    }
+
+    window.addEventListener("popstate", syncRouteState);
+    return () => window.removeEventListener("popstate", syncRouteState);
+  }, []);
+
+  useEffect(() => {
+    updateTagSearchQuery(query);
+  }, [query]);
 
   useEffect(() => {
     listTags(query)
@@ -783,6 +1246,37 @@ function DashboardPreview({ contents, events }: { contents: MediaContentDto[]; e
   );
 }
 
+function HomePage({
+  stats,
+  contents,
+  events,
+}: {
+  stats: Array<{ label: string; value: string; icon: LucideIcon }>;
+  contents: MediaContentDto[];
+  events: IngestEventDto[];
+}) {
+  return (
+    <section className="space-y-4">
+      <div>
+        <h1 className="text-2xl font-semibold">主页</h1>
+        <p className="mt-1 text-sm text-muted-foreground">查看素材、内容库和接入事件的整体状态。</p>
+      </div>
+      <div className="grid gap-4 md:grid-cols-4">
+        {stats.map(({ label, value, icon: Icon }) => (
+          <Card key={label} className="p-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">{label}</span>
+              <Icon className="h-4 w-4 text-primary" />
+            </div>
+            <div className="mt-2 text-2xl font-semibold">{value}</div>
+          </Card>
+        ))}
+      </div>
+      <DashboardPreview contents={contents} events={events} />
+    </section>
+  );
+}
+
 function LoginPage({ theme, onThemeChange, onLogin }: { theme: ThemeMode; onThemeChange: (theme: ThemeMode) => void; onLogin: (token: string) => Promise<void> }) {
   const [token, setToken] = useState("");
   const [error, setError] = useState("");
@@ -835,14 +1329,14 @@ function LoginPage({ theme, onThemeChange, onLogin }: { theme: ThemeMode; onThem
 
 export default function App() {
   const [theme, setTheme] = useState<ThemeMode>(() => (document.documentElement.dataset.theme === "dark" ? "dark" : "light"));
-  const [page, setPage] = useState<PageKey>("workspace");
+  const [page, setPage] = useState<PageKey>(() => pageFromPath(window.location.pathname));
   const [token, setToken] = useState(() => getStoredToken());
   const [assets, setAssets] = useState<MediaAssetDto[]>([]);
   const [contents, setContents] = useState<MediaContentDto[]>([]);
   const [events, setEvents] = useState<IngestEventDto[]>([]);
   const [draft, setDraft] = useState<WorkspaceDraftDto>(() => createEmptyDraft());
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [filters, setFilters] = useState<MediaFilters>({ query: "", status: "all", kind: "all" });
+  const [filters, setFilters] = useState<MediaFilters>(() => (pageFromPath(window.location.pathname) === "workspace" ? readWorkspaceFiltersFromUrl() : defaultMediaFilters));
   const [pendingTotal, setPendingTotal] = useState(0);
   const [contentTotal, setContentTotal] = useState(0);
   const [eventTotal, setEventTotal] = useState(0);
@@ -859,6 +1353,21 @@ export default function App() {
     if (!token) return;
     void refreshOverview();
   }, [token]);
+
+  useEffect(() => {
+    function syncRouteState() {
+      const nextPage = pageFromPath(window.location.pathname);
+      setPage(nextPage);
+      if (nextPage === "workspace") setFilters(readWorkspaceFiltersFromUrl());
+    }
+
+    window.addEventListener("popstate", syncRouteState);
+    return () => window.removeEventListener("popstate", syncRouteState);
+  }, []);
+
+  useEffect(() => {
+    if (page === "workspace") updateWorkspaceQuery(filters);
+  }, [filters, page]);
 
   useEffect(() => {
     if (!token) return;
@@ -884,6 +1393,15 @@ export default function App() {
     setEvents([]);
     setSelectedIds([]);
     setDraft(createEmptyDraft());
+  }
+
+  function changePage(nextPage: PageKey) {
+    const nextPath = pagePaths[nextPage];
+    if (window.location.pathname !== nextPath || window.location.search) {
+      window.history.pushState(null, "", nextPath);
+    }
+    setPage(nextPage);
+    if (nextPage === "workspace") setFilters(defaultMediaFilters);
   }
 
   async function refreshOverview() {
@@ -981,7 +1499,7 @@ export default function App() {
       setSelectedIds([]);
       await refreshAssets();
       await refreshOverview();
-      setPage("library");
+      changePage("library");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "提交内容失败");
     }
@@ -990,46 +1508,28 @@ export default function App() {
   if (!token) return <LoginPage theme={theme} onThemeChange={changeTheme} onLogin={handleLogin} />;
 
   return (
-    <div className="flex min-h-screen bg-background text-foreground">
-      <Sidebar page={page} onPageChange={setPage} />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <TopBar filters={filters} onFiltersChange={setFilters} theme={theme} onThemeChange={changeTheme} />
-        <main className="flex flex-1 flex-col gap-4 p-4 lg:p-6">
-          <div className="flex justify-end">
-            <Button variant="ghost" onClick={handleLogout}>
-              退出
-            </Button>
-          </div>
+    <div className="min-h-screen bg-background text-foreground">
+      <Sidebar page={page} onPageChange={changePage} />
+      <div className="min-w-0 lg:pl-60">
+        <TopBar filters={filters} onFiltersChange={setFilters} onLogout={handleLogout} showFilters={page === "workspace"} theme={theme} onThemeChange={changeTheme} />
+        <main className="flex min-h-screen flex-col gap-4 overflow-y-auto px-4 pb-4 pt-[4.5rem] lg:px-6 lg:pb-6">
           {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
-          <div className="grid gap-4 md:grid-cols-4">
-            {stats.map(({ label, value, icon: Icon }) => (
-              <Card key={label} className="p-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">{label}</span>
-                  <Icon className="h-4 w-4 text-primary" />
-                </div>
-                <div className="mt-2 text-2xl font-semibold">{value}</div>
-              </Card>
-            ))}
-          </div>
+          {page === "home" && <HomePage stats={stats} contents={contents} events={events} />}
           {page === "workspace" && (
-            <>
-              <WorkspacePage
-                assets={assets}
-                draft={draft}
-                filters={filters}
-                selectedIds={selectedIds}
-                onAddAssetByDrag={addAssetByDrag}
-                onAddSelected={addSelectedToDraft}
-                onDraftChange={updateDraftMeta}
-                onFiltersChange={setFilters}
-                onIgnoreSelected={() => void ignoreSelected()}
-                onMoveElement={moveDraftElement}
-                onSubmit={() => void submitCurrentDraft()}
-                onToggleAsset={toggleAsset}
-              />
-              <DashboardPreview contents={contents} events={events} />
-            </>
+            <WorkspacePage
+              assets={assets}
+              draft={draft}
+              filters={filters}
+              selectedIds={selectedIds}
+              onAddAssetByDrag={addAssetByDrag}
+              onAddSelected={addSelectedToDraft}
+              onDraftChange={updateDraftMeta}
+              onFiltersChange={setFilters}
+              onIgnoreSelected={() => void ignoreSelected()}
+              onMoveElement={moveDraftElement}
+              onSubmit={() => void submitCurrentDraft()}
+              onToggleAsset={toggleAsset}
+            />
           )}
           {page === "library" && <ContentLibraryPage />}
           {page === "events" && <EventsPage />}

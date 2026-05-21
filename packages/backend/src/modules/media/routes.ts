@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import type { ApiResp, CreateMediaContentDto, MediaContentDto, MediaElement, PageResp } from "@pic/shared";
+import type { ApiResp, BatchUpdateMediaTagsDto, CreateMediaContentDto, MediaContentDto, MediaElement, PageResp } from "@pic/shared";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma.js";
 import { toMediaContentDto } from "./mapper.js";
@@ -16,6 +16,20 @@ function parseTags(value: string | undefined) {
 function inferContentType(elements: MediaElement[]) {
   if (elements.length !== 1) return "composite";
   return elements[0]?.type ?? "composite";
+}
+
+function normalizeTags(tags: string[] | undefined) {
+  return Array.from(new Set((tags ?? []).map((tag) => tag.trim()).filter(Boolean)));
+}
+
+async function syncContentTags(tx: Prisma.TransactionClient, contentId: string, tags: string[]) {
+  await tx.contentTag.deleteMany({ where: { contentId } });
+  if (tags.length > 0) {
+    await tx.contentTag.createMany({
+      data: tags.map((tag) => ({ contentId, tag })),
+      skipDuplicates: true,
+    });
+  }
 }
 
 export async function registerMediaRoutes(app: FastifyInstance) {
@@ -62,7 +76,7 @@ export async function registerMediaRoutes(app: FastifyInstance) {
 
   app.post<{ Body: CreateMediaContentDto; Reply: ApiResp<MediaContentDto> }>("/api/media", async (request) => {
     const elements = request.body.elements ?? [];
-    const tags = Array.from(new Set(request.body.tags.map((tag) => tag.trim()).filter(Boolean)));
+    const tags = normalizeTags(request.body.tags);
     const assetIds = request.body.assetIds ?? [];
     const sign = contentSign(elements);
     const content = await prisma.$transaction(async (tx) => {
@@ -83,13 +97,7 @@ export async function registerMediaRoutes(app: FastifyInstance) {
         },
       });
 
-      await tx.contentTag.deleteMany({ where: { contentId: row.id } });
-      if (tags.length > 0) {
-        await tx.contentTag.createMany({
-          data: tags.map((tag) => ({ contentId: row.id, tag })),
-          skipDuplicates: true,
-        });
-      }
+      await syncContentTags(tx, row.id, tags);
       if (assetIds.length > 0) {
         await tx.mediaAsset.updateMany({
           where: { id: { in: assetIds } },
@@ -99,5 +107,29 @@ export async function registerMediaRoutes(app: FastifyInstance) {
       return row;
     });
     return { success: true, message: "ok", data: toMediaContentDto(content) };
+  });
+
+  app.patch<{ Body: BatchUpdateMediaTagsDto; Reply: ApiResp<MediaContentDto[]> }>("/api/media/tags", async (request) => {
+    const ids = normalizeTags(request.body.ids);
+    const addTags = normalizeTags(request.body.addTags);
+    const removeTags = new Set(normalizeTags(request.body.removeTags));
+    if (ids.length === 0) return { success: true, message: "ok", data: [] };
+
+    const rows = await prisma.$transaction(async (tx) => {
+      const contents = await tx.mediaContent.findMany({ where: { id: { in: ids } } });
+      const updated: typeof contents = [];
+      for (const content of contents) {
+        const nextTags = Array.from(new Set([...content.tags.filter((tag) => !removeTags.has(tag)), ...addTags]));
+        const row = await tx.mediaContent.update({
+          where: { id: content.id },
+          data: { tags: nextTags },
+        });
+        await syncContentTags(tx, row.id, nextTags);
+        updated.push(row);
+      }
+      return updated;
+    });
+
+    return { success: true, message: "ok", data: rows.map(toMediaContentDto) };
   });
 }

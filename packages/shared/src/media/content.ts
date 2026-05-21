@@ -25,6 +25,12 @@ export interface CreateMediaContentDto {
   source?: SourceBindingDto;
 }
 
+export interface BatchUpdateMediaTagsDto {
+  ids: string[];
+  addTags?: string[];
+  removeTags?: string[];
+}
+
 export interface MediaFileDto {
   md5: string;
   storageKey: string;

@@ -1,17 +1,18 @@
 import type { IngestEventDto, MediaAssetDto, MediaAssetStatus, MediaContentDto, MediaElement, MediaType, TagDto, WorkspaceDraftDto } from "@pic/shared";
 import type { LucideIcon } from "lucide-react";
-import { useEffect, useState, type CSSProperties, type DragEvent } from "react";
+import { useEffect, useState, type CSSProperties, type DragEvent, type KeyboardEvent } from "react";
 import {
   Archive,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ChevronUp,
   Clock3,
   Database,
   FileAudio,
   FileText,
   FileVideo,
-  Filter,
   FolderInput,
   Image,
   LayoutDashboard,
@@ -49,6 +50,15 @@ type ThemeMode = "light" | "dark";
 type PageKey = "home" | "workspace" | "library" | "events" | "tags";
 type TagMode = "and" | "or";
 type ContentCardSize = "small" | "medium" | "large";
+type LibraryRouteState = {
+  query: string;
+  selectedTags: string[];
+  tagQuery: string;
+  mode: TagMode;
+  cardSize: ContentCardSize;
+  page: number;
+  size: number;
+};
 
 interface MediaFilters {
   query: string;
@@ -87,6 +97,10 @@ const contentCardSizeOptions: Array<{ label: string; value: ContentCardSize; min
   { label: "中", value: "medium", minWidth: "260px" },
   { label: "大", value: "large", minWidth: "340px" },
 ];
+
+const defaultLibraryPage = 1;
+const defaultLibraryPageSize = 80;
+const libraryPageSizeOptions = [20, 40, 80, 120];
 
 const pagePaths: Record<PageKey, string> = {
   home: "/",
@@ -137,7 +151,7 @@ function tagMatchesKeyword(tag: TagDto, keyword: string) {
 }
 
 function parseTagInput(value: string) {
-  return Array.from(new Set(value.split(/[，,\s]+/).map((tag) => tag.trim()).filter(Boolean)));
+  return Array.from(new Set(value.split(/[,\s\uFF0C]+/).map((tag) => tag.trim()).filter(Boolean)));
 }
 
 function pageFromPath(pathname: string): PageKey {
@@ -147,6 +161,16 @@ function pageFromPath(pathname: string): PageKey {
 
 function tagsFromParam(value: string | null) {
   return value?.split(",").map((tag) => tag.trim()).filter(Boolean) ?? [];
+}
+
+function numberFromParam(value: string | null, fallback: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function libraryPageSizeFromParam(value: string | null) {
+  const parsed = numberFromParam(value, defaultLibraryPageSize);
+  return libraryPageSizeOptions.includes(parsed) ? parsed : defaultLibraryPageSize;
 }
 
 function setSearchParam(params: URLSearchParams, key: string, value: string | undefined) {
@@ -180,7 +204,7 @@ function updateWorkspaceQuery(filters: MediaFilters) {
   });
 }
 
-function readLibraryStateFromUrl() {
+function readLibraryStateFromUrl(): LibraryRouteState {
   const params = new URLSearchParams(window.location.search);
   const tagMode = params.get("tagMode");
   const card = params.get("card");
@@ -190,22 +214,20 @@ function readLibraryStateFromUrl() {
     tagQuery: params.get("tagInput") ?? "",
     mode: tagMode === "or" ? "or" : "and",
     cardSize: isContentCardSize(card) ? card : "medium",
-  } satisfies {
-    query: string;
-    selectedTags: string[];
-    tagQuery: string;
-    mode: TagMode;
-    cardSize: ContentCardSize;
+    page: numberFromParam(params.get("page"), defaultLibraryPage),
+    size: libraryPageSizeFromParam(params.get("size")),
   };
 }
 
-function updateLibraryQuery(state: { query: string; selectedTags: string[]; tagQuery: string; mode: TagMode; cardSize: ContentCardSize }) {
+function updateLibraryQuery(state: LibraryRouteState) {
   replaceRouteQuery(pagePaths.library, {
     q: state.query.trim() || undefined,
     tags: state.selectedTags.length > 0 ? state.selectedTags.join(",") : undefined,
     tagInput: state.tagQuery.trim() || undefined,
     tagMode: state.mode === "and" ? undefined : state.mode,
     card: state.cardSize === "medium" ? undefined : state.cardSize,
+    page: String(state.page),
+    size: String(state.size),
   });
 }
 
@@ -319,6 +341,143 @@ function SelectField<T extends string>({
   );
 }
 
+function TagSelectInput({
+  label,
+  selectedTags,
+  onChange,
+  placeholder,
+  helperText,
+  className,
+}: {
+  label: string;
+  selectedTags: string[];
+  onChange: (tags: string[]) => void;
+  placeholder: string;
+  helperText?: string;
+  className?: string;
+}) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [suggestions, setSuggestions] = useState<TagDto[]>([]);
+  const normalizedQuery = query.trim();
+  const visibleSuggestions = suggestions.filter((tag) => !selectedTags.includes(tag.name)).slice(0, 8);
+  const canCreate = parseTagInput(query).some((tag) => !selectedTags.includes(tag));
+
+  useEffect(() => {
+    if (!open) {
+      setSuggestions([]);
+      return;
+    }
+
+    let ignore = false;
+    listTags(normalizedQuery || undefined)
+      .then((rows) => {
+        if (ignore) return;
+        setSuggestions(normalizedQuery ? rows.filter((tag) => tagMatchesKeyword(tag, normalizedQuery)) : rows);
+      })
+      .catch(() => {
+        if (!ignore) setSuggestions([]);
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [normalizedQuery, open]);
+
+  function addTags(tags: string[]) {
+    const next = Array.from(new Set([...selectedTags, ...tags.map((tag) => tag.trim()).filter(Boolean)]));
+    onChange(next);
+    setQuery("");
+    setOpen(true);
+  }
+
+  function removeTag(tag: string) {
+    onChange(selectedTags.filter((item) => item !== tag));
+  }
+
+  function commitQuery() {
+    const tags = parseTagInput(query);
+    if (tags.length > 0) addTags(tags);
+    else setQuery("");
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter" || event.key === ",") {
+      event.preventDefault();
+      commitQuery();
+    }
+    if (event.key === "Backspace" && query.length === 0 && selectedTags.length > 0) {
+      onChange(selectedTags.slice(0, -1));
+    }
+  }
+
+  return (
+    <div className={cn("block", className)}>
+      <span className="mb-1 block text-xs font-medium text-muted-foreground">{label}</span>
+      <div className="relative">
+        <div className="flex min-h-9 flex-wrap items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-sm outline-none transition-colors focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20">
+          {selectedTags.map((tag) => (
+            <button
+              key={tag}
+              type="button"
+              className="inline-flex h-6 items-center gap-1 rounded-md border border-primary/30 bg-primary-muted px-2 text-xs text-primary-text"
+              onClick={() => removeTag(tag)}
+            >
+              {tag}
+              <X className="h-3 w-3" />
+            </button>
+          ))}
+          <input
+            className="h-7 min-w-[140px] flex-1 bg-transparent px-1 text-sm outline-none placeholder:text-subtle-foreground"
+            placeholder={selectedTags.length === 0 ? placeholder : "继续输入 tag"}
+            value={query}
+            onBlur={() => {
+              commitQuery();
+              setOpen(false);
+            }}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setOpen(true);
+            }}
+            onFocus={() => setOpen(true)}
+            onKeyDown={handleKeyDown}
+          />
+        </div>
+        {open && (visibleSuggestions.length > 0 || canCreate) && (
+          <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-56 overflow-y-auto rounded-md border border-border bg-surface p-1 shadow-lg">
+            {visibleSuggestions.map((tag) => (
+              <button
+                key={tag.name}
+                type="button"
+                className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-sm hover:bg-surface-muted"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  addTags([tag.name]);
+                }}
+              >
+                <span>{tag.name}</span>
+                <span className="text-xs text-subtle-foreground">{tag.count}</span>
+              </button>
+            ))}
+            {canCreate && (
+              <button
+                type="button"
+                className="w-full rounded px-2 py-1.5 text-left text-sm text-primary-text hover:bg-primary-muted"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  commitQuery();
+                }}
+              >
+                添加输入的 tag
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      {helperText && <div className="mt-1 text-xs text-muted-foreground">{helperText}</div>}
+    </div>
+  );
+}
+
 function Sidebar({ page, onPageChange }: { page: PageKey; onPageChange: (page: PageKey) => void }) {
   return (
     <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 overflow-y-auto border-r border-border bg-surface px-3 py-4 lg:block">
@@ -351,42 +510,26 @@ function Sidebar({ page, onPageChange }: { page: PageKey; onPageChange: (page: P
 }
 
 function TopBar({
-  filters,
-  onFiltersChange,
+  page,
   theme,
   onThemeChange,
-  showFilters,
   onLogout,
 }: {
-  filters: MediaFilters;
-  onFiltersChange: (filters: MediaFilters) => void;
+  page: PageKey;
   theme: ThemeMode;
   onThemeChange: (theme: ThemeMode) => void;
-  showFilters: boolean;
   onLogout: () => void;
 }) {
+  const pageTitle = pageItems.find((item) => item.key === page)?.label ?? "主页";
+
   return (
     <header className="fixed left-0 right-0 top-0 z-20 flex h-14 items-center justify-between border-b border-border bg-surface px-4 lg:left-60">
-      <div className="flex min-w-0 items-center gap-3">
-        {showFilters && (
-          <>
-            <div className="relative hidden sm:block">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-subtle-foreground" />
-              <input
-                className="h-9 w-80 rounded-md border border-border bg-surface pl-9 pr-3 text-sm text-foreground outline-none transition-colors placeholder:text-subtle-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
-                placeholder="搜索素材、tag、来源或 MD5"
-                value={filters.query}
-                onChange={(event) => onFiltersChange({ ...filters, query: event.target.value })}
-              />
-            </div>
-            <Button variant="secondary">
-              <Filter className="h-4 w-4" />
-              筛选
-            </Button>
-          </>
-        )}
+      <div className="flex min-w-0 flex-1 items-center gap-4">
+        <div className="min-w-0">
+          <div className="truncate text-base font-semibold text-foreground">{pageTitle}</div>
+        </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex shrink-0 items-center gap-2">
         <Button variant={theme === "light" ? "secondary" : "ghost"} className="h-9 w-9 px-0" aria-label="浅色主题" onClick={() => onThemeChange("light")}>
           <Sun className="h-4 w-4" />
         </Button>
@@ -654,7 +797,6 @@ function WorkspacePage({
   onSubmit: () => void;
 }) {
   const [draggedElementIndex, setDraggedElementIndex] = useState<number | null>(null);
-  const tagText = draft.tags.join("，");
 
   function handleDropAsset(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -670,25 +812,19 @@ function WorkspacePage({
 
   return (
     <section className="min-h-0 flex-1 space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-normal">工作台</h1>
-          <p className="mt-1 text-sm text-muted-foreground">左侧按顺序组装正式内容，右侧从 QQ 主动推送的素材中滚动选择。</p>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="secondary">
-            <Upload className="h-4 w-4" />
-            上传素材
-          </Button>
-          <Button disabled={selectedIds.length === 0} variant="secondary" onClick={onIgnoreSelected}>
-            <X className="h-4 w-4" />
-            忽略
-          </Button>
-          <Button disabled={selectedIds.length === 0} variant="primary" onClick={onAddSelected}>
-            <Plus className="h-4 w-4" />
-            加入结果
-          </Button>
-        </div>
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <Button variant="secondary">
+          <Upload className="h-4 w-4" />
+          上传素材
+        </Button>
+        <Button disabled={selectedIds.length === 0} variant="secondary" onClick={onIgnoreSelected}>
+          <X className="h-4 w-4" />
+          忽略
+        </Button>
+        <Button disabled={selectedIds.length === 0} variant="primary" onClick={onAddSelected}>
+          <Plus className="h-4 w-4" />
+          加入结果
+        </Button>
       </div>
 
       <div className="grid min-h-[640px] gap-4 xl:grid-cols-[minmax(420px,0.9fr)_minmax(520px,1.1fr)]">
@@ -710,22 +846,12 @@ function WorkspacePage({
                 onChange={(event) => onDraftChange({ title: event.target.value, tags: draft.tags })}
               />
             </label>
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium text-muted-foreground">Tag，使用逗号分隔</span>
-              <input
-                className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-                value={tagText}
-                onChange={(event) =>
-                  onDraftChange({
-                    title: draft.title,
-                    tags: event.target.value
-                      .split(/[，,]/)
-                      .map((tag) => tag.trim())
-                      .filter(Boolean),
-                  })
-                }
-              />
-            </label>
+            <TagSelectInput
+              label="Tag"
+              selectedTags={draft.tags}
+              placeholder="输入 tag 名称筛选或新建"
+              onChange={(tags) => onDraftChange({ title: draft.title, tags })}
+            />
           </div>
 
           <div
@@ -769,6 +895,15 @@ function WorkspacePage({
             <Badge>{selectedIds.length} 个已选</Badge>
           </div>
           <div className="mb-3 flex flex-wrap items-center gap-3 rounded-md border border-border bg-surface-muted p-3">
+            <div className="relative min-w-[240px] flex-1">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-subtle-foreground" />
+              <input
+                className="h-9 w-full rounded-md border border-border bg-surface pl-9 pr-3 text-sm text-foreground outline-none transition-colors placeholder:text-subtle-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
+                placeholder="搜索素材、tag、来源或 MD5"
+                value={filters.query}
+                onChange={(event) => onFiltersChange({ ...filters, query: event.target.value })}
+              />
+            </div>
             <SelectField label="状态" value={filters.status} options={statusOptions} onChange={(status) => onFiltersChange({ ...filters, status })} />
             <SelectField label="类型" value={filters.kind} options={kindOptions} onChange={(kind) => onFiltersChange({ ...filters, kind })} />
           </div>
@@ -794,6 +929,8 @@ function ContentLibraryPage() {
   const [tagSuggestions, setTagSuggestions] = useState<TagDto[]>([]);
   const [mode, setMode] = useState<TagMode>(initialRouteState.mode);
   const [cardSize, setCardSize] = useState<ContentCardSize>(initialRouteState.cardSize);
+  const [currentPage, setCurrentPage] = useState(initialRouteState.page);
+  const [pageSize, setPageSize] = useState(initialRouteState.size);
   const [tags, setTags] = useState<TagDto[]>([]);
   const [contents, setContents] = useState<MediaContentDto[]>([]);
   const [selectedContentIds, setSelectedContentIds] = useState<string[]>([]);
@@ -809,6 +946,11 @@ function ContentLibraryPage() {
   const visibleTagSuggestions = tagQuery.trim()
     ? tagSuggestions.filter((tag) => !selectedTags.includes(tag.name)).slice(0, 8)
     : [];
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const visiblePages = Array.from({ length: Math.min(5, totalPages) }, (_, index) => {
+    const start = Math.min(Math.max(currentPage - 2, 1), Math.max(totalPages - 4, 1));
+    return start + index;
+  });
 
   useEffect(() => {
     listTags()
@@ -817,7 +959,12 @@ function ContentLibraryPage() {
   }, []);
 
   async function refreshContents() {
-    const page = await listMedia({ q: query, tags: selectedTags, tagMode: mode, size: 80 });
+    const page = await listMedia({ q: query, tags: selectedTags, tagMode: mode, page: currentPage, size: pageSize });
+    const nextTotalPages = Math.max(1, Math.ceil(page.total / pageSize));
+    if (currentPage > nextTotalPages) {
+      setCurrentPage(nextTotalPages);
+      return;
+    }
     setContents(page.data);
     setTotal(page.total);
     setSelectedContentIds((current) => {
@@ -835,6 +982,8 @@ function ContentLibraryPage() {
       setTagQuery(next.tagQuery);
       setMode(next.mode);
       setCardSize(next.cardSize);
+      setCurrentPage(next.page);
+      setPageSize(next.size);
     }
 
     window.addEventListener("popstate", syncRouteState);
@@ -842,8 +991,8 @@ function ContentLibraryPage() {
   }, []);
 
   useEffect(() => {
-    updateLibraryQuery({ query, selectedTags, tagQuery, mode, cardSize });
-  }, [cardSize, mode, query, selectedTags, tagQuery]);
+    updateLibraryQuery({ query, selectedTags, tagQuery, mode, cardSize, page: currentPage, size: pageSize });
+  }, [cardSize, currentPage, mode, pageSize, query, selectedTags, tagQuery]);
 
   useEffect(() => {
     const keyword = tagQuery.trim();
@@ -866,20 +1015,32 @@ function ContentLibraryPage() {
   useEffect(() => {
     refreshContents()
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载内容库失败"));
-  }, [mode, query, selectedTags]);
+  }, [currentPage, mode, pageSize, query, selectedTags]);
+
+  function resetLibraryPage() {
+    setCurrentPage(defaultLibraryPage);
+  }
+
+  function changePageSize(size: number) {
+    setPageSize(size);
+    setCurrentPage(defaultLibraryPage);
+  }
 
   function addTag(tag: string) {
     setSelectedTags((current) => (current.includes(tag) ? current : [...current, tag]));
     setTagQuery("");
     setTagSuggestions([]);
+    resetLibraryPage();
   }
 
   function removeTag(tag: string) {
     setSelectedTags((current) => current.filter((item) => item !== tag));
+    resetLibraryPage();
   }
 
   function toggleCommonTag(tag: string) {
     setSelectedTags((current) => (current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]));
+    resetLibraryPage();
   }
 
   function toggleContentSelection(id: string) {
@@ -907,11 +1068,7 @@ function ContentLibraryPage() {
   }
 
   return (
-    <section className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold">内容库</h1>
-        <p className="mt-1 text-sm text-muted-foreground">展示已入库内容，支持 tag 多选筛选和 AND / OR 匹配。</p>
-      </div>
+    <section className="space-y-4 xl:pr-16">
       <Card className="space-y-3 p-4">
         <div className="flex flex-wrap items-center gap-3">
           <div className="relative min-w-[280px] flex-1">
@@ -920,14 +1077,31 @@ function ContentLibraryPage() {
               className="h-9 w-full rounded-md border border-border bg-surface pl-9 pr-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
               placeholder="搜索标题、tag、签名或内容"
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                resetLibraryPage();
+              }}
             />
           </div>
           <div className="flex rounded-md border border-border bg-surface p-1">
-            <Button className="h-7 px-2" variant={mode === "and" ? "primary" : "ghost"} onClick={() => setMode("and")}>
+            <Button
+              className="h-7 px-2"
+              variant={mode === "and" ? "primary" : "ghost"}
+              onClick={() => {
+                setMode("and");
+                resetLibraryPage();
+              }}
+            >
               AND
             </Button>
-            <Button className="h-7 px-2" variant={mode === "or" ? "primary" : "ghost"} onClick={() => setMode("or")}>
+            <Button
+              className="h-7 px-2"
+              variant={mode === "or" ? "primary" : "ghost"}
+              onClick={() => {
+                setMode("or");
+                resetLibraryPage();
+              }}
+            >
               OR
             </Button>
           </div>
@@ -985,6 +1159,7 @@ function ContentLibraryPage() {
               onKeyDown={(event) => {
                 if (event.key === "Backspace" && tagQuery.length === 0) {
                   setSelectedTags((current) => current.slice(0, -1));
+                  resetLibraryPage();
                 }
               }}
             />
@@ -1004,10 +1179,10 @@ function ContentLibraryPage() {
             </div>
           )}
         </div>
-        <div className="text-xs text-subtle-foreground">当前条件匹配 {total} 条，展示前 {contents.length} 条。</div>
+        <div className="text-xs text-subtle-foreground">当前条件匹配 {total} 条，本页展示 {contents.length} 条。</div>
       </Card>
       {selectedContentIds.length > 0 && (
-        <Card className="space-y-3 border-primary/30 bg-primary-muted/40 p-4">
+        <Card aria-label="已选内容操作" className="sticky top-[4.75rem] z-20 space-y-3 border-primary/30 bg-primary-muted/95 p-4 shadow-sm backdrop-blur">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <div className="text-sm font-semibold">已选择 {selectedContentIds.length} 条内容</div>
@@ -1023,24 +1198,18 @@ function ContentLibraryPage() {
             </div>
           </div>
           <div className="grid gap-3 lg:grid-cols-[1fr_1fr_auto]">
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium text-muted-foreground">添加 tag</span>
-              <input
-                className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-                placeholder="例如：猫猫, 表情"
-                value={batchAddTags}
-                onChange={(event) => setBatchAddTags(event.target.value)}
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium text-muted-foreground">移除 tag</span>
-              <input
-                className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-                placeholder="例如：待整理"
-                value={batchRemoveTags}
-                onChange={(event) => setBatchRemoveTags(event.target.value)}
-              />
-            </label>
+            <TagSelectInput
+              label="添加 tag"
+              selectedTags={parseTagInput(batchAddTags)}
+              placeholder="输入 tag 名称筛选或新建"
+              onChange={(tags) => setBatchAddTags(tags.join(","))}
+            />
+            <TagSelectInput
+              label="移除 tag"
+              selectedTags={parseTagInput(batchRemoveTags)}
+              placeholder="输入 tag 名称筛选"
+              onChange={(tags) => setBatchRemoveTags(tags.join(","))}
+            />
             <div className="flex items-end">
               <Button
                 className="w-full lg:w-auto"
@@ -1055,6 +1224,53 @@ function ContentLibraryPage() {
         </Card>
       )}
       {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
+      <div aria-label="内容库分页" className="flex justify-center xl:fixed xl:right-4 xl:top-[4.75rem] xl:z-10 xl:block xl:w-10">
+        <div className="flex flex-wrap items-center justify-center gap-1 rounded-md border border-border bg-surface p-1 shadow-sm xl:flex-col">
+          <Button
+            className="h-8 w-8 px-0"
+            disabled={currentPage <= 1}
+            variant="secondary"
+            aria-label="上一页"
+            onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+          >
+            <ChevronUp className="h-4 w-4 hidden xl:block" />
+            <ChevronLeft className="h-4 w-4 xl:hidden" />
+          </Button>
+          {visiblePages.map((page) => (
+            <Button
+              key={page}
+              className="h-8 w-8 px-0 text-xs"
+              variant={page === currentPage ? "primary" : "secondary"}
+              aria-label={`第 ${page} 页`}
+              onClick={() => setCurrentPage(page)}
+            >
+              {page}
+            </Button>
+          ))}
+          <Button
+            className="h-8 w-8 px-0"
+            disabled={currentPage >= totalPages}
+            variant="secondary"
+            aria-label="下一页"
+            onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+          >
+            <ChevronDown className="h-4 w-4 hidden xl:block" />
+            <ChevronRight className="h-4 w-4 xl:hidden" />
+          </Button>
+          <select
+            className="h-8 w-8 rounded-md border border-border bg-surface px-0 text-center text-xs outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+            title="每页数量"
+            value={pageSize}
+            onChange={(event) => changePageSize(Number(event.target.value))}
+          >
+            {libraryPageSizeOptions.map((size) => (
+              <option key={size} value={size}>
+                {size}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
       <div className="grid gap-3" style={gridStyle}>
         {contents.map((content) => (
           <Card
@@ -1133,10 +1349,6 @@ function TagManagementPage() {
 
   return (
     <section className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold">标签管理</h1>
-        <p className="mt-1 text-sm text-muted-foreground">查找 tag，查看 tag 使用次数，后续可扩展合并和重命名。</p>
-      </div>
       <Card className="p-4">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-subtle-foreground" />
@@ -1180,10 +1392,6 @@ function EventsPage() {
 
   return (
     <section className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold">接入事件</h1>
-        <p className="mt-1 text-sm text-muted-foreground">QQ / NapCat 主动推送和手动上传事件记录。</p>
-      </div>
       {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
       <Card className="overflow-hidden">
         {events.map((event) => (
@@ -1257,10 +1465,6 @@ function HomePage({
 }) {
   return (
     <section className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold">主页</h1>
-        <p className="mt-1 text-sm text-muted-foreground">查看素材、内容库和接入事件的整体状态。</p>
-      </div>
       <div className="grid gap-4 md:grid-cols-4">
         {stats.map(({ label, value, icon: Icon }) => (
           <Card key={label} className="p-4">
@@ -1511,8 +1715,8 @@ export default function App() {
     <div className="min-h-screen bg-background text-foreground">
       <Sidebar page={page} onPageChange={changePage} />
       <div className="min-w-0 lg:pl-60">
-        <TopBar filters={filters} onFiltersChange={setFilters} onLogout={handleLogout} showFilters={page === "workspace"} theme={theme} onThemeChange={changeTheme} />
-        <main className="flex min-h-screen flex-col gap-4 overflow-y-auto px-4 pb-4 pt-[4.5rem] lg:px-6 lg:pb-6">
+        <TopBar page={page} theme={theme} onThemeChange={changeTheme} onLogout={handleLogout} />
+        <main className="flex min-h-screen flex-col gap-4 px-4 pb-4 pt-[4.5rem] lg:px-6 lg:pb-6">
           {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
           {page === "home" && <HomePage stats={stats} contents={contents} events={events} />}
           {page === "workspace" && (

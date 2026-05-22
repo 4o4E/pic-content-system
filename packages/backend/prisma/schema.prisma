@@ -66,7 +66,7 @@ model MediaFile {
 }
 
 model MediaContent {
-  id         String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id         String     @id @db.VarChar(16)
   type       MediaType
   title      String?
   tags       String[]   @default([])
@@ -86,8 +86,8 @@ model MediaContent {
 }
 
 model SourceBinding {
-  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  contentId         String?  @map("content_id") @db.Uuid
+  id                String   @id @db.VarChar(16)
+  contentId         String?  @map("content_id") @db.VarChar(16)
   platform          String
   platformMessageId String?  @map("platform_message_id")
   platformGroupId   String?  @map("platform_group_id")
@@ -108,11 +108,11 @@ model SourceBinding {
 }
 
 model MediaAsset {
-  id        String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id        String           @id @db.VarChar(16)
   kind      MediaType
   fileMd5   String?          @map("file_md5") @db.Char(32)
   element   Json
-  sourceId  String?          @map("source_id") @db.Uuid
+  sourceId  String?          @map("source_id") @db.VarChar(16)
   status    MediaAssetStatus @default(pending)
   metadata  Json             @default("{}")
   createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -128,11 +128,11 @@ model MediaAsset {
 }
 
 model WorkspaceDraft {
-  id        String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id        String               @id @db.VarChar(16)
   title     String?
   tags      String[]             @default([])
   elements  Json                 @default("[]")
-  assetIds  String[]             @default([]) @map("asset_ids") @db.Uuid
+  assetIds  String[]             @default([]) @map("asset_ids")
   status    WorkspaceDraftStatus @default(editing)
   metadata  Json                 @default("{}")
   createdAt DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -143,8 +143,8 @@ model WorkspaceDraft {
 }
 
 model ContentTag {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  contentId String   @map("content_id") @db.Uuid
+  id        String   @id @db.VarChar(16)
+  contentId String   @map("content_id") @db.VarChar(16)
   tag       String
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
@@ -163,8 +163,8 @@ model TagAlias {
 }
 
 model AuditEvent {
-  id               String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  contentId        String       @map("content_id") @db.Uuid
+  id               String       @id @db.VarChar(16)
+  contentId        String       @map("content_id") @db.VarChar(16)
   action           AuditAction
   fromState        AuditState?  @map("from_state")
   toState          AuditState?  @map("to_state")
@@ -180,7 +180,7 @@ model AuditEvent {
 }
 
 model IngestEvent {
-  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id              String   @id @db.VarChar(16)
   source          String
   status          String
   platform        String

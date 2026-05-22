@@ -16,6 +16,7 @@ import type {
 } from "@pic/shared";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma.js";
+import { nextSnowflakeId } from "../../lib/snowflake.js";
 import { contentSign, fileMd5FromElement, inferContentType, normalizeIds } from "./media-utils.js";
 import { toMediaContentDto } from "./mapper.js";
 import { resolveTagAliases, syncContentTags } from "../tag/tag-service.js";
@@ -127,6 +128,7 @@ export async function registerMediaRoutes(app: FastifyInstance) {
       const row = await tx.mediaContent.upsert({
         where: { sign },
         create: {
+          id: nextSnowflakeId(),
           type: inferContentType(elements),
           title: request.body.title,
           tags,
@@ -258,6 +260,7 @@ export async function registerMediaRoutes(app: FastifyInstance) {
         for (const element of elements) {
           await tx.mediaAsset.create({
             data: {
+              id: nextSnowflakeId(),
               kind: element.type,
               fileMd5: fileMd5FromElement(element),
               element: element as unknown as Prisma.InputJsonValue,

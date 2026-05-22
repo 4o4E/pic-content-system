@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { ApiResp, CreateIngestEventDto, IngestEventDto, PageResp } from "@pic/shared";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma.js";
+import { nextSnowflakeId } from "../../lib/snowflake.js";
 
 function toIngestEventDto(row: Awaited<ReturnType<typeof prisma.ingestEvent.findMany>>[number]): IngestEventDto {
   return {
@@ -37,6 +38,7 @@ export async function registerIngestRoutes(app: FastifyInstance) {
   app.post<{ Body: CreateIngestEventDto; Reply: ApiResp<IngestEventDto> }>("/api/ingest-events", async (request) => {
     const row = await prisma.ingestEvent.create({
       data: {
+        id: nextSnowflakeId(),
         source: request.body.source,
         status: request.body.status,
         platform: request.body.platform,

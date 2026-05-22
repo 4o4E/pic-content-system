@@ -38,7 +38,17 @@ async function registerFrontendRoutes(app: FastifyInstance, config: AppConfig) {
 
 export async function createApp(config: AppConfig = loadConfig()) {
   const app = Fastify({
-    logger: true,
+    logger: {
+      transport: {
+        target: "pino-pretty",
+        options: {
+          colorize: false,
+          ignore: "pid,hostname",
+          singleLine: true,
+          translateTime: "yyyy-mm-dd HH:MM:ss.l",
+        },
+      },
+    },
     // base64 导入会放大请求体，正式 multipart 接口补齐前需要可配置上限。
     bodyLimit: config.maxRequestBodyBytes,
   });

@@ -66,10 +66,14 @@ export interface AuditEventDto {
   id: string;
   contentId: string;
   action: "submit" | "approve" | "reject" | "archive" | "reset" | "delete";
+  actionLabel: string;
   fromState?: AuditState;
   toState?: AuditState;
+  stateChange?: string;
   operator?: AuditOperatorDto;
+  operatorLabel: string;
   reason?: string;
+  summary: string;
   createdAt: string;
 }
 

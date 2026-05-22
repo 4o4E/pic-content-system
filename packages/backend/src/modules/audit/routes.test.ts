@@ -168,7 +168,18 @@ describe("audit routes", () => {
       success: true,
       data: {
         content: { id: "content-id", sourceProfile: { platform: "qq", userId: "user-id" } },
-        events: [{ id: "event-id", action: "submit", toState: "pending", reason: "提交审核" }],
+        events: [
+          {
+            id: "event-id",
+            action: "submit",
+            actionLabel: "提交",
+            toState: "pending",
+            stateChange: "待审批",
+            operatorLabel: "qq:user-id",
+            reason: "提交审核",
+            summary: "qq:user-id / 提交 / 待审批 / 提交审核",
+          },
+        ],
       },
     });
     expect(mockPrisma.auditEvent.findMany).toHaveBeenCalledWith({ where: { contentId: "content-id" }, orderBy: { createdAt: "desc" } });

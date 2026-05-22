@@ -1,4 +1,5 @@
 import type {
+  AuditDetailDto,
   AuditListItemDto,
   AuditState,
   IngestEventDto,
@@ -59,6 +60,7 @@ import {
   deleteMediaContents,
   deleteTagAlias,
   fileUrl,
+  getAuditDetail,
   getStoredToken,
   ignoreAsset,
   listAssets,
@@ -315,6 +317,17 @@ function updateTagSearchQuery(query: string) {
 
 function normalizeTagAliasInput(alias: string) {
   return alias.trim().toLowerCase();
+}
+
+function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(value));
 }
 
 function elementSummary(element: MediaElement) {
@@ -1795,12 +1808,48 @@ function SourceProfileSummary({ profile }: { profile?: SourceProfileDto }) {
   );
 }
 
+function AuditLogModal({ detail, onClose }: { detail: AuditDetailDto; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" onClick={onClose}>
+      <Card className="max-h-[86vh] w-full max-w-2xl overflow-y-auto p-4" onClick={(event) => event.stopPropagation()}>
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold">审批日志</h2>
+            <p className="mt-1 truncate font-mono text-xs text-subtle-foreground">{detail.content.id}</p>
+          </div>
+          <Button className="h-8" variant="ghost" onClick={onClose}>
+            关闭
+          </Button>
+        </div>
+        <div className="space-y-3">
+          {detail.events.map((event) => (
+            <div key={event.id} className="rounded-md border border-border bg-surface-muted p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Badge className="border-primary/30 bg-primary-muted text-primary-text">{event.actionLabel}</Badge>
+                <span className="text-xs text-subtle-foreground">{formatDateTime(event.createdAt)}</span>
+              </div>
+              <p className="mt-2 text-sm text-foreground">{event.summary}</p>
+              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-subtle-foreground">
+                <span>操作人：{event.operatorLabel}</span>
+                {event.stateChange && <span>状态：{event.stateChange}</span>}
+                {event.reason && <span>原因：{event.reason}</span>}
+              </div>
+            </div>
+          ))}
+          {detail.events.length === 0 && <div className="p-6 text-center text-sm text-muted-foreground">暂无审批日志。</div>}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 function AuditsPage({ onOpenImagePreview }: { onOpenImagePreview: (elements: MediaElement[], activeElement: MediaElement) => void }) {
   const [state, setState] = useState<AuditState | "all">("pending");
   const [type, setType] = useState<MediaType | "all">("all");
   const [items, setItems] = useState<AuditListItemDto[]>([]);
   const [previewContent, setPreviewContent] = useState<AuditListItemDto | null>(null);
   const [previewElement, setPreviewElement] = useState<MediaElement | null>(null);
+  const [auditDetail, setAuditDetail] = useState<AuditDetailDto | null>(null);
   const [busyId, setBusyId] = useState("");
   const [total, setTotal] = useState(0);
   const [error, setError] = useState("");
@@ -1837,6 +1886,17 @@ function AuditsPage({ onOpenImagePreview }: { onOpenImagePreview: (elements: Med
       await refreshAudits();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "审批操作失败");
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  async function openAuditLog(id: string) {
+    setBusyId(id);
+    try {
+      setAuditDetail(await getAuditDetail(id));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "加载审批日志失败");
     } finally {
       setBusyId("");
     }
@@ -1895,6 +1955,9 @@ function AuditsPage({ onOpenImagePreview }: { onOpenImagePreview: (elements: Med
               <Button disabled={busyId === content.id} variant="secondary" onClick={() => void runAuditAction(content.id, "reset")}>
                 重置
               </Button>
+              <Button disabled={busyId === content.id} variant="secondary" onClick={() => void openAuditLog(content.id)}>
+                日志
+              </Button>
               <Button disabled={busyId === content.id} variant="danger" onClick={() => void runAuditAction(content.id, "delete")}>
                 删除
               </Button>
@@ -1905,6 +1968,7 @@ function AuditsPage({ onOpenImagePreview }: { onOpenImagePreview: (elements: Med
       {items.length === 0 && <Card className="p-8 text-center text-sm text-muted-foreground">没有符合条件的审批内容。</Card>}
       {previewContent && <ContentDetailModal content={previewContent} onClose={() => setPreviewContent(null)} onOpenElement={(element) => openElementPreview(element, previewContent.elements)} />}
       {previewElement && <MediaElementModal element={previewElement} onClose={() => setPreviewElement(null)} />}
+      {auditDetail && <AuditLogModal detail={auditDetail} onClose={() => setAuditDetail(null)} />}
     </section>
   );
 }

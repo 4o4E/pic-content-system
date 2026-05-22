@@ -3,6 +3,7 @@ import type { ApiResp, ImportPicImageDto, MediaElement, MediaType, PicImageResul
 import type { Prisma } from "@prisma/client";
 import type { AppConfig } from "../../config/env.js";
 import { prisma } from "../../db/prisma.js";
+import { nextSnowflakeId } from "../../lib/snowflake.js";
 import { inspectFileBuffer } from "../file/file-inspector.js";
 import { storeMediaFile } from "../file/file-storage.js";
 import { contentSign } from "../media/media-utils.js";
@@ -88,6 +89,7 @@ export async function registerPicRoutes(app: FastifyInstance, config: AppConfig)
         });
         const asset = await tx.mediaAsset.create({
           data: {
+            id: nextSnowflakeId(),
             kind: "image",
             fileMd5: file.md5,
             element: element as unknown as Prisma.InputJsonValue,
@@ -112,6 +114,7 @@ export async function registerPicRoutes(app: FastifyInstance, config: AppConfig)
           })
         : await tx.mediaContent.create({
             data: {
+              id: nextSnowflakeId(),
               type: "image",
               tags,
               elements: elements as unknown as Prisma.InputJsonValue,

@@ -1,5 +1,6 @@
 import type { MediaElement, SourceBindingDto, SourceProfileDto } from "@pic/shared";
 import type { Prisma, SourceBinding } from "@prisma/client";
+import { nextSnowflakeId } from "../../lib/snowflake.js";
 import { firstFileMd5 } from "../media/media-utils.js";
 
 export function toSourceBindingDto(source: SourceBinding): SourceBindingDto {
@@ -55,6 +56,7 @@ export async function writeSourceBinding(
 
   return tx.sourceBinding.create({
     data: {
+      id: nextSnowflakeId(),
       contentId,
       platform: source.platform,
       platformMessageId,

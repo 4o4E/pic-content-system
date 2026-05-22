@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "../../db/prisma.js";
+import { nextSnowflakeId } from "../../lib/snowflake.js";
 
 type PrismaLike = PrismaClient | Prisma.TransactionClient;
 
@@ -29,7 +30,7 @@ export async function syncContentTags(tx: Prisma.TransactionClient, contentId: s
   await tx.contentTag.deleteMany({ where: { contentId } });
   if (tags.length > 0) {
     await tx.contentTag.createMany({
-      data: tags.map((tag) => ({ contentId, tag })),
+      data: tags.map((tag) => ({ id: nextSnowflakeId(), contentId, tag })),
       skipDuplicates: true,
     });
   }

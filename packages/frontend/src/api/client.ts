@@ -1,6 +1,7 @@
 import type {
   ApiResp,
   AuditActionDto,
+  AuditDetailDto,
   AuditListItemDto,
   AuditState,
   BatchDeleteMediaAssetsDto,
@@ -214,6 +215,10 @@ export function listAudits(query: AuditQuery = {}) {
       size: query.size ?? 20,
     }),
   );
+}
+
+export function getAuditDetail(id: string) {
+  return request<AuditDetailDto>(`/api/audits/${id}`);
 }
 
 function submitAuditAction(id: string, action: "approve" | "reject" | "archive" | "reset", body: AuditActionDto = {}) {

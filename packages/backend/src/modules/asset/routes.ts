@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { ApiResp, BatchDeleteMediaAssetsDto, CreateMediaAssetDto, MediaAssetDto, PageResp } from "@pic/shared";
 import type { MediaAssetStatus, MediaType, Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma.js";
+import { nextSnowflakeId } from "../../lib/snowflake.js";
 import { toMediaAssetDto } from "../media/mapper.js";
 
 function normalizeIds(ids: string[] | undefined) {
@@ -20,7 +21,7 @@ export async function registerAssetRoutes(app: FastifyInstance) {
       if (request.query.q) {
         const keyword = request.query.q.trim();
         where.OR = [{ fileMd5: { contains: keyword, mode: "insensitive" } }];
-        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(keyword)) {
+        if (/^[0-9A-Za-z]{6,16}$/.test(keyword)) {
           where.OR.push({ id: keyword });
         }
       }
@@ -45,6 +46,7 @@ export async function registerAssetRoutes(app: FastifyInstance) {
   app.post<{ Body: CreateMediaAssetDto; Reply: ApiResp<MediaAssetDto> }>("/api/assets", async (request) => {
     const asset = await prisma.mediaAsset.create({
       data: {
+        id: nextSnowflakeId(),
         kind: request.body.kind,
         fileMd5: request.body.fileMd5,
         element: request.body.element as unknown as Prisma.InputJsonValue,

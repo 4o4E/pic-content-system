@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useEffect } from "react";
 import Viewer from "react-viewer";
 
 export interface ImagePreviewItem {
@@ -28,28 +28,34 @@ export function createImagePreviewState(images: ImagePreviewItem[], activeIndex 
 }
 
 export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewState; onClose: () => void }) {
-  const [container, setContainer] = useState<HTMLDivElement | null>(null);
-  const bindContainer = useCallback((node: HTMLDivElement | null) => setContainer(node), []);
+  useEffect(() => {
+    if (!state.visible) return;
 
-  if (!state.visible) return null;
+    function handleViewerClick(event: globalThis.MouseEvent) {
+      if (!(event.target instanceof Element)) return;
+      const target = event.target;
+      if (!target.closest(".react-viewer-canvas, .react-viewer-mask")) return;
+      if (target.closest(".react-viewer-toolbar, .react-viewer-navbar, .react-viewer-close, img")) return;
+      onClose();
+    }
+
+    document.addEventListener("click", handleViewerClick, true);
+    return () => document.removeEventListener("click", handleViewerClick, true);
+  }, [onClose, state.visible]);
 
   return (
-    <div ref={bindContainer} className="fixed inset-0 z-[1200] h-screen w-screen">
-      {container && (
-        <Viewer
-          visible
-          container={container}
-          images={state.images}
-          activeIndex={state.activeIndex}
-          zIndex={1200}
-          downloadable
-          rotatable
-          scalable
-          zoomable
-          drag
-          onClose={onClose}
-        />
-      )}
-    </div>
+    <Viewer
+      visible={state.visible}
+      images={state.images}
+      activeIndex={state.activeIndex}
+      zIndex={1200}
+      downloadable
+      rotatable
+      scalable
+      zoomable
+      drag
+      onMaskClick={onClose}
+      onClose={onClose}
+    />
   );
 }

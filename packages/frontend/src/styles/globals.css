@@ -37,10 +37,17 @@ html[data-theme="dark"] {
   box-sizing: border-box;
 }
 
+html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  overflow: hidden;
   background: var(--background);
   color: var(--foreground);
   font-family:
@@ -59,4 +66,18 @@ input,
 textarea,
 select {
   font: inherit;
+}
+
+.react-viewer:not(.react-viewer-inline) {
+  inset: 0 !important;
+  pointer-events: none;
+  position: fixed !important;
+  z-index: 1200 !important;
+}
+
+.react-viewer-mask,
+.react-viewer-canvas,
+.react-viewer-footer,
+.react-viewer-close {
+  pointer-events: auto;
 }

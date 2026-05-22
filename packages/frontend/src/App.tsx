@@ -2199,7 +2199,7 @@ export default function App() {
   if (!token) return <LoginPage theme={theme} onThemeChange={changeTheme} onLogin={handleLogin} />;
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="h-full overflow-y-auto bg-background text-foreground">
       <Sidebar page={page} onPageChange={changePage} />
       <div className="min-w-0 lg:pl-60">
         <TopBar page={page} theme={theme} onThemeChange={changeTheme} onLogout={handleLogout} />

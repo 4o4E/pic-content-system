@@ -6,14 +6,18 @@
   "scripts": {
     "dev": "pnpm -r --parallel dev",
     "build": "pnpm -r build",
+    "ci:test": "cross-env DATABASE_URL=postgresql://ci:ci@localhost:5432/pic_content_system?schema=public pnpm prisma:generate && cross-env DATABASE_URL=postgresql://ci:ci@localhost:5432/pic_content_system?schema=public pnpm prisma:validate && pnpm typecheck && pnpm build",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
+    "release:dist": "node scripts/assemble-release.mjs",
+    "release:package": "pnpm build && pnpm release:dist",
     "prisma:generate": "pnpm --filter @pic/backend prisma:generate",
     "prisma:validate": "pnpm --filter @pic/backend prisma:validate"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
     "@types/pg": "^8.20.0",
+    "cross-env": "^10.1.0",
     "pg": "^8.21.0",
     "typescript": "^5.8.0"
   }

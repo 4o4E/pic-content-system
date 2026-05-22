@@ -14,6 +14,7 @@ export function registerAuthGuard(app: FastifyInstance, config: AppConfig) {
   app.addHook("onRequest", async (request, reply) => {
     const url = request.url.split("?")[0] ?? "";
     if (url === "/health" || url === "/api/auth/session") return;
+    if (!url.startsWith("/api/")) return;
 
     if (!config.accessToken) {
       await reply.code(500).send({ success: false, message: "服务端未配置 ACCESS_TOKEN" } satisfies ApiResp);

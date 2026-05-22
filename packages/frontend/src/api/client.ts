@@ -1,6 +1,10 @@
 import type {
   ApiResp,
+  BatchDeleteMediaAssetsDto,
+  BatchDeleteMediaContentsDto,
   AuthSessionDto,
+  BatchRestoreMediaContentsToWorkspaceDto,
+  BatchRestoreMediaContentsToWorkspaceResultDto,
   BatchUpdateMediaTagsDto,
   CreateIngestEventDto,
   CreateMediaAssetDto,
@@ -16,7 +20,7 @@ import type {
   TagDto,
 } from "@pic/shared";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 const TOKEN_KEY = "pic-content-token";
 
 export interface AssetQuery {
@@ -31,6 +35,7 @@ export interface MediaQuery {
   q?: string;
   tags?: string[];
   tagMode?: "and" | "or";
+  sort?: "time_desc" | "time_asc";
   page?: number;
   size?: number;
 }
@@ -47,12 +52,19 @@ export function clearStoredToken() {
   localStorage.removeItem(TOKEN_KEY);
 }
 
+function apiUrl(path: string) {
+  if (path.startsWith("http")) return path;
+  if (API_BASE_URL) return new URL(path, API_BASE_URL).toString();
+  return path;
+}
+
 function withQuery(path: string, query: Record<string, string | number | undefined>) {
-  const url = new URL(path, API_BASE_URL);
+  const url = new URL(path, API_BASE_URL || window.location.origin);
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined && value !== "") url.searchParams.set(key, String(value));
   }
-  return url.toString();
+  if (path.startsWith("http") || API_BASE_URL) return url.toString();
+  return `${url.pathname}${url.search}`;
 }
 
 async function request<T>(path: string, init: RequestInit = {}) {
@@ -61,7 +73,7 @@ async function request<T>(path: string, init: RequestInit = {}) {
   if (token) headers.set("Authorization", `Bearer ${token}`);
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
 
-  const response = await fetch(path.startsWith("http") ? path : new URL(path, API_BASE_URL).toString(), {
+  const response = await fetch(apiUrl(path), {
     ...init,
     headers,
   });
@@ -103,12 +115,20 @@ export function createAsset(body: CreateMediaAssetDto) {
   });
 }
 
+export function deleteAssets(body: BatchDeleteMediaAssetsDto) {
+  return request<{ deleted: number }>("/api/assets", {
+    method: "DELETE",
+    body: JSON.stringify(body),
+  });
+}
+
 export function listMedia(query: MediaQuery = {}) {
   return request<PageResp<MediaContentDto>>(
     withQuery("/api/media", {
       q: query.q,
       tags: query.tags?.join(","),
       tagMode: query.tagMode,
+      sort: query.sort,
       page: query.page ?? 1,
       size: query.size ?? 60,
     }),
@@ -125,6 +145,20 @@ export function createMedia(body: CreateMediaContentDto) {
 export function batchUpdateMediaTags(body: BatchUpdateMediaTagsDto) {
   return request<MediaContentDto[]>("/api/media/tags", {
     method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteMediaContents(body: BatchDeleteMediaContentsDto) {
+  return request<{ deleted: number }>("/api/media", {
+    method: "DELETE",
+    body: JSON.stringify(body),
+  });
+}
+
+export function restoreMediaContentsToWorkspace(body: BatchRestoreMediaContentsToWorkspaceDto) {
+  return request<BatchRestoreMediaContentsToWorkspaceResultDto>("/api/media/workspace-assets", {
+    method: "POST",
     body: JSON.stringify(body),
   });
 }

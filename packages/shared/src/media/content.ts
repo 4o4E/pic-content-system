@@ -31,6 +31,19 @@ export interface BatchUpdateMediaTagsDto {
   removeTags?: string[];
 }
 
+export interface BatchDeleteMediaContentsDto {
+  ids: string[];
+}
+
+export interface BatchRestoreMediaContentsToWorkspaceDto {
+  ids: string[];
+}
+
+export interface BatchRestoreMediaContentsToWorkspaceResultDto {
+  created: number;
+  moved: number;
+}
+
 export interface MediaFileDto {
   md5: string;
   storageKey: string;

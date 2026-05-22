@@ -5,6 +5,7 @@ export interface AppConfig {
   port: number;
   filesDir: string;
   accessToken: string;
+  frontendDistDir: string;
 }
 
 let dotEnvLoaded = false;
@@ -40,5 +41,6 @@ export function loadConfig(): AppConfig {
     port: Number(process.env.PORT ?? 3000),
     filesDir: process.env.FILES_DIR ?? "./data/files",
     accessToken: process.env.ACCESS_TOKEN ?? "",
+    frontendDistDir: process.env.FRONTEND_DIST_DIR ?? "packages/backend/public",
   };
 }

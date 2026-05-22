@@ -21,6 +21,10 @@ export interface CreateMediaAssetDto {
   status?: MediaAssetStatus;
 }
 
+export interface BatchDeleteMediaAssetsDto {
+  ids: string[];
+}
+
 export interface WorkspaceDraftDto {
   id: string;
   title?: string;

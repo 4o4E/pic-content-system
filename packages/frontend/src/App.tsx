@@ -1,6 +1,6 @@
 import type { IngestEventDto, MediaAssetDto, MediaAssetStatus, MediaContentDto, MediaElement, MediaType, TagDto, WorkspaceDraftDto } from "@pic/shared";
 import type { LucideIcon } from "lucide-react";
-import { useEffect, useState, type CSSProperties, type DragEvent, type KeyboardEvent } from "react";
+import { useEffect, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import {
   Archive,
   CheckCircle2,
@@ -25,17 +25,21 @@ import {
   Settings,
   Sun,
   Tags,
+  Trash2,
   Upload,
   X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { createImagePreviewState, emptyImagePreviewState, ImagePreviewViewer, type ImagePreviewItem } from "@/components/media/image-preview";
 import { cn } from "@/lib/utils";
 import {
   batchUpdateMediaTags,
   clearStoredToken,
   createMedia,
+  deleteAssets,
+  deleteMediaContents,
   fileUrl,
   getStoredToken,
   ignoreAsset,
@@ -44,18 +48,21 @@ import {
   listMedia,
   listTags,
   loginWithToken,
+  restoreMediaContentsToWorkspace,
 } from "@/api/client";
 
 type ThemeMode = "light" | "dark";
 type PageKey = "home" | "workspace" | "library" | "events" | "tags";
 type TagMode = "and" | "or";
 type ContentCardSize = "small" | "medium" | "large";
+type LibrarySort = "time_desc" | "time_asc";
 type LibraryRouteState = {
   query: string;
   selectedTags: string[];
   tagQuery: string;
   mode: TagMode;
   cardSize: ContentCardSize;
+  sort: LibrarySort;
   page: number;
   size: number;
 };
@@ -98,9 +105,15 @@ const contentCardSizeOptions: Array<{ label: string; value: ContentCardSize; min
   { label: "大", value: "large", minWidth: "340px" },
 ];
 
+const librarySortOptions: Array<{ label: string; value: LibrarySort }> = [
+  { label: "入库时间倒序", value: "time_desc" },
+  { label: "入库时间正序", value: "time_asc" },
+];
+
 const defaultLibraryPage = 1;
-const defaultLibraryPageSize = 80;
-const libraryPageSizeOptions = [20, 40, 80, 120];
+const defaultLibraryPageSize = 100;
+const defaultLibrarySort: LibrarySort = "time_desc";
+const libraryPageSizeOptions = [50, 100, 200];
 
 const pagePaths: Record<PageKey, string> = {
   home: "/",
@@ -134,8 +147,32 @@ function createEmptyDraft(): WorkspaceDraftDto {
   };
 }
 
+function alignDraftAssetIds(elements: MediaElement[], assetIds: string[]) {
+  return elements.map((_, index) => assetIds[index] ?? "");
+}
+
+function collectImagePreviewItems(elements: MediaElement[]): ImagePreviewItem[] {
+  return elements.flatMap((element) => {
+    if (element.type === "image") {
+      const src = fileUrl(element.id);
+      return [{ src, alt: "图片预览", downloadUrl: src }];
+    }
+    if (element.type === "speak") return collectImagePreviewItems(element.message);
+    if (element.type === "discuss") return collectImagePreviewItems(element.content);
+    return [];
+  });
+}
+
+function imagePreviewSrc(element: MediaElement) {
+  return element.type === "image" ? fileUrl(element.id) : "";
+}
+
 function isContentCardSize(value: string | null): value is ContentCardSize {
   return contentCardSizeOptions.some((option) => option.value === value);
+}
+
+function isLibrarySort(value: string | null): value is LibrarySort {
+  return librarySortOptions.some((option) => option.value === value);
 }
 
 function isMediaAssetStatusFilter(value: string | null): value is MediaAssetStatus | "all" {
@@ -208,12 +245,14 @@ function readLibraryStateFromUrl(): LibraryRouteState {
   const params = new URLSearchParams(window.location.search);
   const tagMode = params.get("tagMode");
   const card = params.get("card");
+  const sort = params.get("sort");
   return {
     query: params.get("q") ?? "",
     selectedTags: tagsFromParam(params.get("tags")),
     tagQuery: params.get("tagInput") ?? "",
     mode: tagMode === "or" ? "or" : "and",
     cardSize: isContentCardSize(card) ? card : "medium",
+    sort: isLibrarySort(sort) ? sort : defaultLibrarySort,
     page: numberFromParam(params.get("page"), defaultLibraryPage),
     size: libraryPageSizeFromParam(params.get("size")),
   };
@@ -226,6 +265,7 @@ function updateLibraryQuery(state: LibraryRouteState) {
     tagInput: state.tagQuery.trim() || undefined,
     tagMode: state.mode === "and" ? undefined : state.mode,
     card: state.cardSize === "medium" ? undefined : state.cardSize,
+    sort: state.sort === defaultLibrarySort ? undefined : state.sort,
     page: String(state.page),
     size: String(state.size),
   });
@@ -479,6 +519,12 @@ function TagSelectInput({
 }
 
 function Sidebar({ page, onPageChange }: { page: PageKey; onPageChange: (page: PageKey) => void }) {
+  function handleNavigate(event: MouseEvent<HTMLAnchorElement>, nextPage: PageKey) {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    onPageChange(nextPage);
+  }
+
   return (
     <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 overflow-y-auto border-r border-border bg-surface px-3 py-4 lg:block">
       <div className="mb-6 flex items-center gap-2 px-2">
@@ -492,17 +538,18 @@ function Sidebar({ page, onPageChange }: { page: PageKey; onPageChange: (page: P
       </div>
       <nav className="space-y-1">
         {pageItems.map((item) => (
-          <button
+          <a
             key={item.key}
+            href={pagePaths[item.key]}
             className={cn(
               "flex h-9 w-full items-center gap-2 rounded-md px-2 text-sm text-muted-foreground transition-colors hover:bg-surface-muted hover:text-foreground",
               page === item.key && "bg-primary-muted text-primary-text",
             )}
-            onClick={() => onPageChange(item.key)}
+            onClick={(event) => handleNavigate(event, item.key)}
           >
             <item.icon className="h-4 w-4" />
             {item.label}
-          </button>
+          </a>
         ))}
       </nav>
     </aside>
@@ -587,26 +634,116 @@ function AssetPreview({ element }: { element: MediaElement }) {
   );
 }
 
-function SingleContentPreview({ element }: { element: MediaElement }) {
+function DraftElementPreview({ element, onOpenImage }: { element: MediaElement; onOpenImage?: (element: MediaElement) => void }) {
   if (element.type === "image") {
     return (
-      <div className="h-full overflow-hidden rounded-md border border-border bg-surface-muted">
-        <img className="h-full w-full object-contain" src={fileUrl(element.id)} alt="图片内容预览" loading="lazy" />
-      </div>
+      <button
+        className="block w-full overflow-hidden rounded-md border border-border bg-surface outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary"
+        type="button"
+        onClick={() => onOpenImage?.(element)}
+      >
+        <img className="max-h-80 w-full object-contain" src={fileUrl(element.id)} alt="草稿图片预览" loading="lazy" />
+      </button>
     );
   }
 
   if (element.type === "video") {
     return (
-      <div className="h-full overflow-hidden rounded-md border border-border bg-black">
-        <video className="h-full w-full object-contain" src={fileUrl(element.id)} autoPlay muted loop playsInline controls />
+      <div className="overflow-hidden rounded-md border border-border bg-black">
+        <video className="max-h-80 w-full" src={fileUrl(element.id)} controls preload="metadata" playsInline />
       </div>
     );
   }
 
   if (element.type === "audio") {
     return (
-      <div className="flex h-full min-h-0 items-center gap-3 rounded-md border border-border bg-surface-muted p-4">
+      <div className="rounded-md border border-border bg-surface p-3">
+        <div className="mb-3 flex items-center gap-2 text-sm font-medium text-foreground">
+          <FileAudio className="h-4 w-4 text-primary" />
+          音频预览
+        </div>
+        <audio className="w-full" src={fileUrl(element.id)} controls preload="metadata" />
+      </div>
+    );
+  }
+
+  if (element.type === "file") {
+    return (
+      <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-surface p-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-surface-muted">
+            <FileText className="h-5 w-5 text-primary" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-foreground">文件</div>
+            <div className="truncate font-mono text-xs text-subtle-foreground">{element.id}</div>
+          </div>
+        </div>
+        <a className="shrink-0 rounded-md border border-border px-3 py-2 text-sm hover:border-primary/40" href={fileUrl(element.id)} target="_blank" rel="noreferrer">
+          打开文件
+        </a>
+      </div>
+    );
+  }
+
+  if (element.type === "text") {
+    return <div className="whitespace-pre-wrap rounded-md border border-border bg-surface p-3 text-sm leading-6 text-foreground">{element.content}</div>;
+  }
+
+  if (element.type === "speak") {
+    return (
+      <div className="rounded-md border border-border bg-surface p-3">
+        <div className="mb-2 text-xs text-muted-foreground">{element.sender.displayName}</div>
+        <div className="space-y-2">
+          {element.message.map((item, index) => (
+            <DraftElementPreview key={`${item.type}-${index}-${elementSummary(item)}`} element={item} onOpenImage={onOpenImage} />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2 rounded-md border border-border bg-surface p-3">
+      {element.content.map((item, index) => (
+        <DraftElementPreview key={`${item.type}-${index}-${item.time}`} element={item} onOpenImage={onOpenImage} />
+      ))}
+    </div>
+  );
+}
+
+function SingleContentPreview({ element, onOpen }: { element: MediaElement; onOpen?: (element: MediaElement) => void }) {
+  if (element.type === "image") {
+    return (
+      <button
+        className="block h-full w-full overflow-hidden rounded-md border border-border bg-surface-muted text-left outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary"
+        onClick={() => onOpen?.(element)}
+        type="button"
+      >
+        <img className="h-full w-full object-contain" src={fileUrl(element.id)} alt="图片内容预览" loading="lazy" />
+      </button>
+    );
+  }
+
+  if (element.type === "video") {
+    return (
+      <button
+        className="block h-full w-full overflow-hidden rounded-md border border-border bg-black outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary"
+        onClick={() => onOpen?.(element)}
+        type="button"
+      >
+        <video className="h-full w-full object-contain" src={fileUrl(element.id)} autoPlay muted loop playsInline />
+      </button>
+    );
+  }
+
+  if (element.type === "audio") {
+    return (
+      <button
+        className="flex h-full min-h-0 w-full items-center gap-3 rounded-md border border-border bg-surface-muted p-4 text-left outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary"
+        onClick={() => onOpen?.(element)}
+        type="button"
+      >
         <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-surface">
           <FileAudio className="h-6 w-6 text-primary" />
         </div>
@@ -614,7 +751,7 @@ function SingleContentPreview({ element }: { element: MediaElement }) {
           <div className="text-sm font-medium text-foreground">音频内容</div>
           <div className="mt-1 truncate font-mono text-xs text-subtle-foreground">{element.id}</div>
         </div>
-      </div>
+      </button>
     );
   }
 
@@ -639,8 +776,8 @@ function SingleContentPreview({ element }: { element: MediaElement }) {
   return <CompositeContentPreview elements={[element]} />;
 }
 
-function CompositeContentPreview({ elements }: { elements: MediaElement[] }) {
-  return (
+function CompositeContentPreview({ elements, onOpen }: { elements: MediaElement[]; onOpen?: () => void }) {
+  const body = (
     <div className="h-full overflow-hidden rounded-md border border-border bg-surface-muted p-3">
       <div className="mb-2 flex max-h-14 flex-wrap gap-2 overflow-hidden">
         {elements.map((element, index) => (
@@ -657,14 +794,156 @@ function CompositeContentPreview({ elements }: { elements: MediaElement[] }) {
       </div>
     </div>
   );
+  if (!onOpen) return body;
+  return (
+    <button
+      className="block h-full w-full text-left outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary"
+      onClick={onOpen}
+      type="button"
+    >
+      {body}
+    </button>
+  );
 }
 
-function ContentPreview({ content }: { content: MediaContentDto }) {
+function ContentPreview({
+  content,
+  onOpenContent,
+  onOpenElement,
+}: {
+  content: MediaContentDto;
+  onOpenContent?: (content: MediaContentDto) => void;
+  onOpenElement?: (element: MediaElement) => void;
+}) {
   if (content.elements.length === 1 && content.type !== "composite") {
     const [element] = content.elements;
-    if (element) return <SingleContentPreview element={element} />;
+    if (element) return <SingleContentPreview element={element} onOpen={onOpenElement} />;
   }
-  return <CompositeContentPreview elements={content.elements} />;
+  return <CompositeContentPreview elements={content.elements} onOpen={onOpenContent ? () => onOpenContent(content) : undefined} />;
+}
+
+function Modal({
+  title,
+  subtitle,
+  closeLabel,
+  zIndex = "z-50",
+  maxWidth = "max-w-5xl",
+  children,
+  onClose,
+}: {
+  title: string;
+  subtitle?: string;
+  closeLabel: string;
+  zIndex?: string;
+  maxWidth?: string;
+  children: ReactNode;
+  onClose: () => void;
+}) {
+  return (
+    <div className={cn("fixed inset-0 flex items-center justify-center bg-black/70 p-4", zIndex)} role="dialog" aria-modal="true" onClick={onClose}>
+      <div className={cn("flex max-h-[92vh] w-full flex-col overflow-hidden rounded-md border border-border bg-surface shadow-xl", maxWidth)} onClick={(event) => event.stopPropagation()}>
+        <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold">{title}</div>
+            {subtitle && <div className="truncate font-mono text-xs text-subtle-foreground">{subtitle}</div>}
+          </div>
+          <Button className="h-8 w-8 px-0" variant="ghost" aria-label={closeLabel} onClick={onClose}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        <div className="min-h-0 flex-1">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function MediaElementModal({ element, onClose }: { element: MediaElement; onClose: () => void }) {
+  if (element.type === "image") return null;
+  const subtitle = "id" in element ? element.id : undefined;
+  return (
+    <Modal title={`${elementToken(element)}预览`} subtitle={subtitle} closeLabel="关闭预览" onClose={onClose}>
+      <div className="min-h-0 bg-black">
+        {element.type === "video" && <video className="max-h-[calc(92vh-3rem)] w-full" src={fileUrl(element.id)} controls autoPlay playsInline />}
+        {element.type === "audio" && (
+          <div className="flex min-h-80 items-center justify-center bg-surface p-8">
+            <div className="w-full max-w-xl rounded-md border border-border bg-surface-muted p-6">
+              <div className="mb-4 flex items-center gap-3">
+                <FileAudio className="h-8 w-8 text-primary" />
+                <div>
+                  <div className="text-sm font-medium">音频内容</div>
+                  <div className="font-mono text-xs text-subtle-foreground">{element.id}</div>
+                </div>
+              </div>
+              <audio className="w-full" src={fileUrl(element.id)} controls autoPlay />
+            </div>
+          </div>
+        )}
+        {element.type === "file" && (
+          <div className="flex min-h-80 items-center justify-center bg-surface p-8">
+            <a className="rounded-md border border-border bg-surface-muted px-4 py-3 text-sm hover:border-primary/40" href={fileUrl(element.id)} target="_blank" rel="noreferrer">
+              打开文件
+            </a>
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function ContentDetailModal({
+  content,
+  onClose,
+  onOpenElement,
+}: {
+  content: MediaContentDto;
+  onClose: () => void;
+  onOpenElement: (element: MediaElement) => void;
+}) {
+  return (
+    <Modal title={content.title ?? "复合内容"} subtitle={content.sign} closeLabel="关闭详情" zIndex="z-40" onClose={onClose}>
+        <div className="max-h-[calc(92vh-3rem)] overflow-y-auto p-4">
+          <div className="mb-4 flex flex-wrap gap-1">
+            {content.tags.map((tag) => (
+              <Badge key={tag} className="border-primary/30 bg-primary-muted text-primary-text">
+                {tag}
+              </Badge>
+            ))}
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            {content.elements.map((element, index) => (
+              <div key={`${element.type}-${index}-${elementSummary(element)}`} className="rounded-md border border-border bg-surface-muted p-3">
+                <div className="mb-2 text-xs font-medium text-muted-foreground">
+                  #{index + 1} {elementToken(element)}
+                </div>
+                {element.type === "text" && <div className="whitespace-pre-wrap text-sm leading-6 text-foreground">{element.content}</div>}
+                {element.type === "image" && (
+                  <button className="block aspect-video w-full overflow-hidden rounded-md bg-surface" type="button" onClick={() => onOpenElement(element)}>
+                    <img className="h-full w-full object-contain" src={fileUrl(element.id)} alt="复合内容图片" loading="lazy" />
+                  </button>
+                )}
+                {element.type === "video" && (
+                  <button className="flex aspect-video w-full items-center justify-center rounded-md bg-black text-white" type="button" onClick={() => onOpenElement(element)}>
+                    <FileVideo className="h-10 w-10" />
+                  </button>
+                )}
+                {element.type === "audio" && (
+                  <button className="flex min-h-28 w-full items-center gap-3 rounded-md bg-surface p-4 text-left" type="button" onClick={() => onOpenElement(element)}>
+                    <FileAudio className="h-8 w-8 text-primary" />
+                    <span className="min-w-0 truncate font-mono text-xs text-subtle-foreground">{element.id}</span>
+                  </button>
+                )}
+                {element.type === "file" && (
+                  <button className="flex min-h-28 w-full items-center gap-3 rounded-md bg-surface p-4 text-left" type="button" onClick={() => onOpenElement(element)}>
+                    <FileText className="h-8 w-8 text-primary" />
+                    <span className="min-w-0 truncate font-mono text-xs text-subtle-foreground">{element.id}</span>
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+    </Modal>
+  );
 }
 
 function MaterialCard({
@@ -672,11 +951,13 @@ function MaterialCard({
   index,
   checked,
   onToggle,
+  onOpenImage,
 }: {
   asset: MediaAssetDto;
   index: number;
   checked: boolean;
   onToggle: (id: string) => void;
+  onOpenImage: (element: MediaElement) => void;
 }) {
   const selectable = asset.status !== "used" && asset.status !== "ignored";
 
@@ -715,8 +996,14 @@ function MaterialCard({
         </div>
         <div className="flex items-center gap-2">
           <p className="min-w-0 flex-1 truncate font-mono text-xs text-subtle-foreground">{asset.fileMd5 ?? asset.id}</p>
-          <Button className="h-7 w-7 px-0" variant="ghost" aria-label="更多操作">
-            <MoreHorizontal className="h-4 w-4" />
+          <Button
+            className="h-7 w-7 px-0"
+            disabled={asset.element.type !== "image"}
+            variant="ghost"
+            aria-label={asset.element.type === "image" ? "预览图片" : "暂无预览操作"}
+            onClick={() => onOpenImage(asset.element)}
+          >
+            {asset.element.type === "image" ? <Search className="h-4 w-4" /> : <MoreHorizontal className="h-4 w-4" />}
           </Button>
         </div>
       </div>
@@ -729,6 +1016,8 @@ function AssemblyItem({
   index,
   count,
   onMove,
+  onRemove,
+  onOpenImage,
   onDragStart,
   onDrop,
 }: {
@@ -736,6 +1025,8 @@ function AssemblyItem({
   index: number;
   count: number;
   onMove: (from: number, to: number) => void;
+  onRemove: (index: number) => void;
+  onOpenImage: (element: MediaElement) => void;
   onDragStart: (index: number) => void;
   onDrop: (index: number) => void;
 }) {
@@ -745,26 +1036,32 @@ function AssemblyItem({
       onDragStart={() => onDragStart(index)}
       onDragOver={(event) => event.preventDefault()}
       onDrop={() => onDrop(index)}
-      className="flex items-center gap-3 rounded-md border border-border bg-surface-muted p-2"
+      className="rounded-md border border-border bg-surface-muted p-3"
     >
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-surface">
-        {element.type === "text" ? <FileText className="h-4 w-4 text-primary" /> : element.type === "audio" ? <FileAudio className="h-4 w-4 text-primary" /> : <Image className="h-4 w-4 text-primary" />}
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="font-mono text-xs text-subtle-foreground">{index + 1}</span>
-          <span className="text-sm font-medium">{elementLabel(element)}</span>
+      <div className="mb-3 flex items-center gap-3">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-surface">
+          {element.type === "text" ? <FileText className="h-4 w-4 text-primary" /> : element.type === "audio" ? <FileAudio className="h-4 w-4 text-primary" /> : element.type === "video" ? <FileVideo className="h-4 w-4 text-primary" /> : <Image className="h-4 w-4 text-primary" />}
         </div>
-        <div className="truncate text-xs text-subtle-foreground">{elementSummary(element)}</div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-xs text-subtle-foreground">{index + 1}</span>
+            <span className="text-sm font-medium">{elementLabel(element)}</span>
+          </div>
+          <div className="truncate text-xs text-subtle-foreground">{elementSummary(element)}</div>
+        </div>
+        <div className="flex gap-1">
+          <Button className="h-7 w-7 px-0" disabled={index === 0} variant="ghost" aria-label="上移" onClick={() => onMove(index, index - 1)}>
+            <ChevronUp className="h-4 w-4" />
+          </Button>
+          <Button className="h-7 w-7 px-0" disabled={index === count - 1} variant="ghost" aria-label="下移" onClick={() => onMove(index, index + 1)}>
+            <ChevronDown className="h-4 w-4" />
+          </Button>
+          <Button className="h-7 w-7 px-0" variant="ghost" aria-label="移除" onClick={() => onRemove(index)}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
-      <div className="flex gap-1">
-        <Button className="h-7 w-7 px-0" disabled={index === 0} variant="ghost" aria-label="上移" onClick={() => onMove(index, index - 1)}>
-          <ChevronUp className="h-4 w-4" />
-        </Button>
-        <Button className="h-7 w-7 px-0" disabled={index === count - 1} variant="ghost" aria-label="下移" onClick={() => onMove(index, index + 1)}>
-          <ChevronDown className="h-4 w-4" />
-        </Button>
-      </div>
+      <DraftElementPreview element={element} onOpenImage={onOpenImage} />
     </div>
   );
 }
@@ -774,29 +1071,40 @@ function WorkspacePage({
   draft,
   filters,
   selectedIds,
+  pendingDeleteConfirm,
   onFiltersChange,
   onToggleAsset,
   onAddSelected,
   onIgnoreSelected,
+  onDeleteSelected,
   onAddAssetByDrag,
+  onAddTextElement,
   onDraftChange,
   onMoveElement,
+  onRemoveElement,
+  onOpenImagePreview,
   onSubmit,
 }: {
   assets: MediaAssetDto[];
   draft: WorkspaceDraftDto;
   filters: MediaFilters;
   selectedIds: string[];
+  pendingDeleteConfirm: boolean;
   onFiltersChange: (filters: MediaFilters) => void;
   onToggleAsset: (id: string) => void;
   onAddSelected: () => void;
   onIgnoreSelected: () => void;
+  onDeleteSelected: () => void;
   onAddAssetByDrag: (id: string) => void;
+  onAddTextElement: (content: string) => void;
   onDraftChange: (draft: Pick<WorkspaceDraftDto, "title" | "tags">) => void;
   onMoveElement: (from: number, to: number) => void;
+  onRemoveElement: (index: number) => void;
+  onOpenImagePreview: (elements: MediaElement[], activeElement: MediaElement) => void;
   onSubmit: () => void;
 }) {
   const [draggedElementIndex, setDraggedElementIndex] = useState<number | null>(null);
+  const [manualText, setManualText] = useState("");
 
   function handleDropAsset(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -810,6 +1118,13 @@ function WorkspacePage({
     setDraggedElementIndex(null);
   }
 
+  function submitManualText() {
+    const content = manualText.trim();
+    if (!content) return;
+    onAddTextElement(content);
+    setManualText("");
+  }
+
   return (
     <section className="min-h-0 flex-1 space-y-4">
       <div className="flex flex-wrap items-center justify-end gap-2">
@@ -820,6 +1135,10 @@ function WorkspacePage({
         <Button disabled={selectedIds.length === 0} variant="secondary" onClick={onIgnoreSelected}>
           <X className="h-4 w-4" />
           忽略
+        </Button>
+        <Button disabled={selectedIds.length === 0} variant={pendingDeleteConfirm ? "danger" : "secondary"} onClick={onDeleteSelected}>
+          <Trash2 className="h-4 w-4" />
+          {pendingDeleteConfirm ? "确认删除" : "删除已选"}
         </Button>
         <Button disabled={selectedIds.length === 0} variant="primary" onClick={onAddSelected}>
           <Plus className="h-4 w-4" />
@@ -854,6 +1173,24 @@ function WorkspacePage({
             />
           </div>
 
+          <div className="mb-4 rounded-md border border-border bg-surface-muted p-3">
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-muted-foreground">手动文本块</span>
+              <textarea
+                className="min-h-24 w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-sm leading-6 text-foreground outline-none transition-colors placeholder:text-subtle-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
+                placeholder="输入需要加入草稿的文本"
+                value={manualText}
+                onChange={(event) => setManualText(event.target.value)}
+              />
+            </label>
+            <div className="mt-2 flex justify-end">
+              <Button disabled={!manualText.trim()} variant="secondary" onClick={submitManualText}>
+                <Plus className="h-4 w-4" />
+                添加文本块
+              </Button>
+            </div>
+          </div>
+
           <div
             onDragOver={(event) => event.preventDefault()}
             onDrop={handleDropAsset}
@@ -868,6 +1205,8 @@ function WorkspacePage({
                 onDragStart={setDraggedElementIndex}
                 onDrop={handleDropElement}
                 onMove={onMoveElement}
+                onRemove={onRemoveElement}
+                onOpenImage={(element) => onOpenImagePreview(draft.elements, element)}
               />
             ))}
             {draft.elements.length === 0 && (
@@ -910,7 +1249,14 @@ function WorkspacePage({
           <div className="min-h-0 flex-1 overflow-y-auto pr-1">
             <div className="grid grid-cols-2 gap-3 md:grid-cols-3 2xl:grid-cols-4">
               {assets.map((asset, index) => (
-                <MaterialCard key={asset.id} asset={asset} checked={selectedIds.includes(asset.id)} index={index} onToggle={onToggleAsset} />
+                <MaterialCard
+                  key={asset.id}
+                  asset={asset}
+                  checked={selectedIds.includes(asset.id)}
+                  index={index}
+                  onOpenImage={(element) => onOpenImagePreview(assets.map((item) => item.element), element)}
+                  onToggle={onToggleAsset}
+                />
               ))}
             </div>
             {assets.length === 0 && <div className="rounded-md border border-border p-8 text-center text-sm text-muted-foreground">没有符合条件的素材。</div>}
@@ -921,7 +1267,7 @@ function WorkspacePage({
   );
 }
 
-function ContentLibraryPage() {
+function ContentLibraryPage({ onOpenImagePreview }: { onOpenImagePreview: (elements: MediaElement[], activeElement: MediaElement) => void }) {
   const initialRouteState = readLibraryStateFromUrl();
   const [query, setQuery] = useState(initialRouteState.query);
   const [selectedTags, setSelectedTags] = useState<string[]>(initialRouteState.selectedTags);
@@ -929,11 +1275,15 @@ function ContentLibraryPage() {
   const [tagSuggestions, setTagSuggestions] = useState<TagDto[]>([]);
   const [mode, setMode] = useState<TagMode>(initialRouteState.mode);
   const [cardSize, setCardSize] = useState<ContentCardSize>(initialRouteState.cardSize);
+  const [sort, setSort] = useState<LibrarySort>(initialRouteState.sort);
   const [currentPage, setCurrentPage] = useState(initialRouteState.page);
   const [pageSize, setPageSize] = useState(initialRouteState.size);
   const [tags, setTags] = useState<TagDto[]>([]);
   const [contents, setContents] = useState<MediaContentDto[]>([]);
   const [selectedContentIds, setSelectedContentIds] = useState<string[]>([]);
+  const [previewContent, setPreviewContent] = useState<MediaContentDto | null>(null);
+  const [previewElement, setPreviewElement] = useState<MediaElement | null>(null);
+  const [pendingDeleteConfirm, setPendingDeleteConfirm] = useState(false);
   const [batchAddTags, setBatchAddTags] = useState("");
   const [batchRemoveTags, setBatchRemoveTags] = useState("");
   const [total, setTotal] = useState(0);
@@ -959,7 +1309,7 @@ function ContentLibraryPage() {
   }, []);
 
   async function refreshContents() {
-    const page = await listMedia({ q: query, tags: selectedTags, tagMode: mode, page: currentPage, size: pageSize });
+    const page = await listMedia({ q: query, tags: selectedTags, tagMode: mode, sort, page: currentPage, size: pageSize });
     const nextTotalPages = Math.max(1, Math.ceil(page.total / pageSize));
     if (currentPage > nextTotalPages) {
       setCurrentPage(nextTotalPages);
@@ -982,6 +1332,7 @@ function ContentLibraryPage() {
       setTagQuery(next.tagQuery);
       setMode(next.mode);
       setCardSize(next.cardSize);
+      setSort(next.sort);
       setCurrentPage(next.page);
       setPageSize(next.size);
     }
@@ -991,8 +1342,8 @@ function ContentLibraryPage() {
   }, []);
 
   useEffect(() => {
-    updateLibraryQuery({ query, selectedTags, tagQuery, mode, cardSize, page: currentPage, size: pageSize });
-  }, [cardSize, currentPage, mode, pageSize, query, selectedTags, tagQuery]);
+    updateLibraryQuery({ query, selectedTags, tagQuery, mode, cardSize, sort, page: currentPage, size: pageSize });
+  }, [cardSize, currentPage, mode, pageSize, query, selectedTags, sort, tagQuery]);
 
   useEffect(() => {
     const keyword = tagQuery.trim();
@@ -1015,7 +1366,11 @@ function ContentLibraryPage() {
   useEffect(() => {
     refreshContents()
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载内容库失败"));
-  }, [currentPage, mode, pageSize, query, selectedTags]);
+  }, [currentPage, mode, pageSize, query, selectedTags, sort]);
+
+  useEffect(() => {
+    setPendingDeleteConfirm(false);
+  }, [selectedContentIds]);
 
   function resetLibraryPage() {
     setCurrentPage(defaultLibraryPage);
@@ -1023,6 +1378,11 @@ function ContentLibraryPage() {
 
   function changePageSize(size: number) {
     setPageSize(size);
+    setCurrentPage(defaultLibraryPage);
+  }
+
+  function changeSort(nextSort: LibrarySort) {
+    setSort(nextSort);
     setCurrentPage(defaultLibraryPage);
   }
 
@@ -1045,6 +1405,43 @@ function ContentLibraryPage() {
 
   function toggleContentSelection(id: string) {
     setSelectedContentIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
+  }
+
+  function openElementPreview(element: MediaElement, elements: MediaElement[]) {
+    if (element.type === "image") {
+      onOpenImagePreview(elements, element);
+      return;
+    }
+    setPreviewElement(element);
+  }
+
+  async function submitBatchDelete() {
+    if (selectedContentIds.length === 0) return;
+    if (!pendingDeleteConfirm) {
+      setPendingDeleteConfirm(true);
+      return;
+    }
+
+    try {
+      await deleteMediaContents({ ids: selectedContentIds });
+      setSelectedContentIds([]);
+      setPendingDeleteConfirm(false);
+      await refreshContents();
+      setTags(await listTags());
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "删除内容失败");
+    }
+  }
+
+  async function restoreSelectedToWorkspace() {
+    if (selectedContentIds.length === 0) return;
+    try {
+      await restoreMediaContentsToWorkspace({ ids: selectedContentIds });
+      setSelectedContentIds([]);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "放回工作台失败");
+    }
   }
 
   async function submitBatchTagUpdate() {
@@ -1120,6 +1517,7 @@ function ContentLibraryPage() {
               ))}
             </div>
           </div>
+          <SelectField label="排序" value={sort} options={librarySortOptions} onChange={changeSort} />
         </div>
         <div className="flex flex-wrap gap-2">
           <span className="flex h-7 items-center text-xs text-muted-foreground">常用 tag</span>
@@ -1182,7 +1580,7 @@ function ContentLibraryPage() {
         <div className="text-xs text-subtle-foreground">当前条件匹配 {total} 条，本页展示 {contents.length} 条。</div>
       </Card>
       {selectedContentIds.length > 0 && (
-        <Card aria-label="已选内容操作" className="sticky top-[4.75rem] z-20 space-y-3 border-primary/30 bg-primary-muted/95 p-4 shadow-sm backdrop-blur">
+        <Card aria-label="已选内容操作" className="sticky top-[4.75rem] z-20 space-y-3 border-primary/30 bg-surface p-4 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <div className="text-sm font-semibold">已选择 {selectedContentIds.length} 条内容</div>
@@ -1194,6 +1592,14 @@ function ContentLibraryPage() {
               </Button>
               <Button variant="ghost" onClick={() => setSelectedContentIds([])}>
                 清空选择
+              </Button>
+              <Button variant="secondary" onClick={() => void restoreSelectedToWorkspace()}>
+                <FolderInput className="h-4 w-4" />
+                放回工作台
+              </Button>
+              <Button variant={pendingDeleteConfirm ? "danger" : "secondary"} onClick={() => void submitBatchDelete()}>
+                <Trash2 className="h-4 w-4" />
+                {pendingDeleteConfirm ? "确认删除" : "删除已选"}
               </Button>
             </div>
           </div>
@@ -1224,7 +1630,7 @@ function ContentLibraryPage() {
         </Card>
       )}
       {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
-      <div aria-label="内容库分页" className="flex justify-center xl:fixed xl:right-4 xl:top-[4.75rem] xl:z-10 xl:block xl:w-10">
+      <div aria-label="内容库分页" className="flex justify-center xl:fixed xl:right-4 xl:top-[4.75rem] xl:z-10 xl:block xl:w-14">
         <div className="flex flex-wrap items-center justify-center gap-1 rounded-md border border-border bg-surface p-1 shadow-sm xl:flex-col">
           <Button
             className="h-8 w-8 px-0"
@@ -1257,18 +1663,21 @@ function ContentLibraryPage() {
             <ChevronDown className="h-4 w-4 hidden xl:block" />
             <ChevronRight className="h-4 w-4 xl:hidden" />
           </Button>
-          <select
-            className="h-8 w-8 rounded-md border border-border bg-surface px-0 text-center text-xs outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-            title="每页数量"
-            value={pageSize}
-            onChange={(event) => changePageSize(Number(event.target.value))}
-          >
-            {libraryPageSizeOptions.map((size) => (
-              <option key={size} value={size}>
-                {size}
-              </option>
-            ))}
-          </select>
+          <div className="relative h-8 w-12">
+            <select
+              className="h-8 w-12 appearance-none rounded-md border border-border bg-surface pl-2 pr-5 text-xs text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+              title="每页数量"
+              value={pageSize}
+              onChange={(event) => changePageSize(Number(event.target.value))}
+            >
+              {libraryPageSizeOptions.map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-subtle-foreground" />
+          </div>
         </div>
       </div>
       <div className="grid gap-3" style={gridStyle}>
@@ -1310,12 +1719,14 @@ function ContentLibraryPage() {
               ))}
             </div>
             <div className="mt-2 min-h-0 flex-1">
-              <ContentPreview content={content} />
+              <ContentPreview content={content} onOpenContent={setPreviewContent} onOpenElement={(element) => openElementPreview(element, content.elements)} />
             </div>
           </Card>
         ))}
       </div>
       {contents.length === 0 && <Card className="p-8 text-center text-sm text-muted-foreground">没有符合当前 tag 条件的内容。</Card>}
+      {previewContent && <ContentDetailModal content={previewContent} onClose={() => setPreviewContent(null)} onOpenElement={(element) => openElementPreview(element, previewContent.elements)} />}
+      {previewElement && <MediaElementModal element={previewElement} onClose={() => setPreviewElement(null)} />}
     </section>
   );
 }
@@ -1541,6 +1952,8 @@ export default function App() {
   const [draft, setDraft] = useState<WorkspaceDraftDto>(() => createEmptyDraft());
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [filters, setFilters] = useState<MediaFilters>(() => (pageFromPath(window.location.pathname) === "workspace" ? readWorkspaceFiltersFromUrl() : defaultMediaFilters));
+  const [pendingAssetDeleteConfirm, setPendingAssetDeleteConfirm] = useState(false);
+  const [imagePreview, setImagePreview] = useState(emptyImagePreviewState);
   const [pendingTotal, setPendingTotal] = useState(0);
   const [contentTotal, setContentTotal] = useState(0);
   const [eventTotal, setEventTotal] = useState(0);
@@ -1596,6 +2009,7 @@ export default function App() {
     setContents([]);
     setEvents([]);
     setSelectedIds([]);
+    setPendingAssetDeleteConfirm(false);
     setDraft(createEmptyDraft());
   }
 
@@ -1642,16 +2056,28 @@ export default function App() {
   }
 
   function toggleAsset(id: string) {
+    setPendingAssetDeleteConfirm(false);
     setSelectedIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   }
 
   function addSelectedToDraft() {
     addAssetsToDraft(selectedIds);
     setSelectedIds([]);
+    setPendingAssetDeleteConfirm(false);
   }
 
   function addAssetByDrag(id: string) {
     addAssetsToDraft([id]);
+  }
+
+  function openImagePreview(elements: MediaElement[], activeElement: MediaElement) {
+    const images = collectImagePreviewItems(elements);
+    const activeSrc = imagePreviewSrc(activeElement);
+    const activeIndex = Math.max(
+      0,
+      images.findIndex((image) => image.src === activeSrc),
+    );
+    setImagePreview(createImagePreviewState(images.length > 0 ? images : collectImagePreviewItems([activeElement]), activeIndex));
   }
 
   function addAssetsToDraft(assetIds: string[]) {
@@ -1660,18 +2086,63 @@ export default function App() {
     if (addable.length === 0) return;
     setDraft((current) => ({
       ...current,
-      assetIds: [...current.assetIds, ...addable.map((asset) => asset.id)],
+      assetIds: [...alignDraftAssetIds(current.elements, current.assetIds), ...addable.map((asset) => asset.id)],
       elements: [...current.elements, ...addable.map((asset) => asset.element)],
       updatedAt: now(),
     }));
     setAssets((current) => current.map((asset) => (addable.some((item) => item.id === asset.id) ? { ...asset, status: "selected", updatedAt: now() } : asset)));
   }
 
+  function addTextElementToDraft(content: string) {
+    const text = content.trim();
+    if (!text) return;
+    setDraft((current) => ({
+      ...current,
+      // 手动文本块没有素材来源，用空字符串占位保持 elements 和 assetIds 顺序对齐。
+      assetIds: [...alignDraftAssetIds(current.elements, current.assetIds), ""],
+      elements: [...current.elements, { type: "text", content: text }],
+      updatedAt: now(),
+    }));
+  }
+
   async function ignoreSelected() {
     await Promise.all(selectedIds.map((id) => ignoreAsset(id)));
     setSelectedIds([]);
+    setPendingAssetDeleteConfirm(false);
     await refreshAssets();
     await refreshOverview();
+  }
+
+  async function deleteSelectedAssets() {
+    if (selectedIds.length === 0) return;
+    if (!pendingAssetDeleteConfirm) {
+      setPendingAssetDeleteConfirm(true);
+      return;
+    }
+
+    const deletingIds = new Set(selectedIds);
+    try {
+      await deleteAssets({ ids: selectedIds });
+      setSelectedIds([]);
+      setPendingAssetDeleteConfirm(false);
+      setAssets((current) => current.filter((asset) => !deletingIds.has(asset.id)));
+      setDraft((current) => {
+        const alignedAssetIds = alignDraftAssetIds(current.elements, current.assetIds);
+        const elements: MediaElement[] = [];
+        const assetIds: string[] = [];
+        current.elements.forEach((element, index) => {
+          const assetId = alignedAssetIds[index] ?? "";
+          if (assetId && deletingIds.has(assetId)) return;
+          elements.push(element);
+          assetIds.push(assetId);
+        });
+        return { ...current, elements, assetIds, updatedAt: now() };
+      });
+      await refreshAssets();
+      await refreshOverview();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "删除素材失败");
+    }
   }
 
   function updateDraftMeta(patch: Pick<WorkspaceDraftDto, "title" | "tags">) {
@@ -1681,13 +2152,29 @@ export default function App() {
   function moveDraftElement(from: number, to: number) {
     if (from === to || from < 0 || to < 0 || from >= draft.elements.length || to >= draft.elements.length) return;
     const elements = [...draft.elements];
-    const assetIds = [...draft.assetIds];
+    const assetIds = alignDraftAssetIds(draft.elements, draft.assetIds);
     const [element] = elements.splice(from, 1);
     const [assetId] = assetIds.splice(from, 1);
-    if (!element || !assetId) return;
+    if (!element) return;
     elements.splice(to, 0, element);
-    assetIds.splice(to, 0, assetId);
+    assetIds.splice(to, 0, assetId ?? "");
     setDraft((current) => ({ ...current, elements, assetIds, updatedAt: now() }));
+  }
+
+  function removeDraftElement(index: number) {
+    if (index < 0 || index >= draft.elements.length) return;
+    const elements = [...draft.elements];
+    const assetIds = alignDraftAssetIds(draft.elements, draft.assetIds);
+    const [removedElement] = elements.splice(index, 1);
+    const [removedAssetId] = assetIds.splice(index, 1);
+    if (!removedElement) return;
+
+    setDraft((current) => ({ ...current, elements, assetIds, updatedAt: now() }));
+    if (removedAssetId) {
+      setAssets((current) =>
+        current.map((asset) => (asset.id === removedAssetId && asset.status === "selected" ? { ...asset, status: "pending", updatedAt: now() } : asset)),
+      );
+    }
   }
 
   async function submitCurrentDraft() {
@@ -1697,7 +2184,7 @@ export default function App() {
         title: draft.title?.trim() || undefined,
         tags: draft.tags,
         elements: draft.elements,
-        assetIds: draft.assetIds,
+        assetIds: alignDraftAssetIds(draft.elements, draft.assetIds).filter(Boolean),
       });
       setDraft(createEmptyDraft());
       setSelectedIds([]);
@@ -1724,22 +2211,28 @@ export default function App() {
               assets={assets}
               draft={draft}
               filters={filters}
+              pendingDeleteConfirm={pendingAssetDeleteConfirm}
               selectedIds={selectedIds}
               onAddAssetByDrag={addAssetByDrag}
               onAddSelected={addSelectedToDraft}
+              onAddTextElement={addTextElementToDraft}
+              onDeleteSelected={() => void deleteSelectedAssets()}
               onDraftChange={updateDraftMeta}
               onFiltersChange={setFilters}
               onIgnoreSelected={() => void ignoreSelected()}
               onMoveElement={moveDraftElement}
+              onOpenImagePreview={openImagePreview}
+              onRemoveElement={removeDraftElement}
               onSubmit={() => void submitCurrentDraft()}
               onToggleAsset={toggleAsset}
             />
           )}
-          {page === "library" && <ContentLibraryPage />}
+          {page === "library" && <ContentLibraryPage onOpenImagePreview={openImagePreview} />}
           {page === "events" && <EventsPage />}
           {page === "tags" && <TagManagementPage />}
         </main>
       </div>
+      <ImagePreviewViewer state={imagePreview} onClose={() => setImagePreview(emptyImagePreviewState)} />
     </div>
   );
 }

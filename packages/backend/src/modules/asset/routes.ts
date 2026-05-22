@@ -1,8 +1,12 @@
 import type { FastifyInstance } from "fastify";
-import type { ApiResp, CreateMediaAssetDto, MediaAssetDto, PageResp } from "@pic/shared";
+import type { ApiResp, BatchDeleteMediaAssetsDto, CreateMediaAssetDto, MediaAssetDto, PageResp } from "@pic/shared";
 import type { MediaAssetStatus, MediaType, Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma.js";
 import { toMediaAssetDto } from "../media/mapper.js";
+
+function normalizeIds(ids: string[] | undefined) {
+  return Array.from(new Set((ids ?? []).map((id) => id.trim()).filter(Boolean)));
+}
 
 export async function registerAssetRoutes(app: FastifyInstance) {
   app.get<{ Querystring: { q?: string; status?: MediaAssetStatus | "all"; kind?: MediaType | "all"; page?: string; size?: string }; Reply: ApiResp<PageResp<MediaAssetDto>> }>(
@@ -49,5 +53,13 @@ export async function registerAssetRoutes(app: FastifyInstance) {
       },
     });
     return { success: true, message: "ok", data: toMediaAssetDto(asset) };
+  });
+
+  app.delete<{ Body: BatchDeleteMediaAssetsDto; Reply: ApiResp<{ deleted: number }> }>("/api/assets", async (request) => {
+    const ids = normalizeIds(request.body?.ids);
+    if (ids.length === 0) return { success: true, message: "ok", data: { deleted: 0 } };
+
+    const result = await prisma.mediaAsset.deleteMany({ where: { id: { in: ids } } });
+    return { success: true, message: "ok", data: { deleted: result.count } };
   });
 }

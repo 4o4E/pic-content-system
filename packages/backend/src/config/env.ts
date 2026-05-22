@@ -6,6 +6,7 @@ export interface AppConfig {
   filesDir: string;
   accessToken: string;
   frontendDistDir: string;
+  maxRequestBodyBytes: number;
 }
 
 let dotEnvLoaded = false;
@@ -42,5 +43,6 @@ export function loadConfig(): AppConfig {
     filesDir: process.env.FILES_DIR ?? "./data/files",
     accessToken: process.env.ACCESS_TOKEN ?? "",
     frontendDistDir: process.env.FRONTEND_DIST_DIR ?? "packages/backend/public",
+    maxRequestBodyBytes: Number(process.env.MAX_REQUEST_BODY_BYTES ?? 100 * 1024 * 1024),
   };
 }

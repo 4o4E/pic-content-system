@@ -13,6 +13,22 @@ jobs:
   test:
     name: Test and build
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: pic_content_system_test
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d pic_content_system_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://test:test@localhost:55432/pic_content_system_test?schema=public
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -34,12 +50,25 @@ jobs:
       - name: Generate Prisma client
         run: pnpm prisma:generate
         env:
-          DATABASE_URL: postgresql://ci:ci@localhost:5432/pic_content_system?schema=public
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
 
       - name: Validate Prisma schema
         run: pnpm prisma:validate
         env:
-          DATABASE_URL: postgresql://ci:ci@localhost:5432/pic_content_system?schema=public
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+
+      - name: Run unit tests
+        run: pnpm test
+
+      - name: Apply database migrations
+        run: pnpm --filter @pic/backend exec prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+
+      - name: Run database tests
+        run: pnpm test:db
+        env:
+          TEST_DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
 
       - name: Typecheck
         run: pnpm typecheck

@@ -11,6 +11,7 @@ import { registerFileRoutes } from "./modules/file/routes.js";
 import { registerHealthRoutes } from "./modules/health/routes.js";
 import { registerIngestRoutes } from "./modules/ingest/routes.js";
 import { registerMediaRoutes } from "./modules/media/routes.js";
+import { registerPicRoutes } from "./modules/pic/routes.js";
 import { registerTagRoutes } from "./modules/tag/routes.js";
 
 async function registerFrontendRoutes(app: FastifyInstance, config: AppConfig) {
@@ -36,6 +37,8 @@ async function registerFrontendRoutes(app: FastifyInstance, config: AppConfig) {
 export async function createApp(config: AppConfig = loadConfig()) {
   const app = Fastify({
     logger: true,
+    // base64 导入会放大请求体，正式 multipart 接口补齐前需要可配置上限。
+    bodyLimit: config.maxRequestBodyBytes,
   });
 
   await app.register(cors, {
@@ -48,6 +51,7 @@ export async function createApp(config: AppConfig = loadConfig()) {
   await registerMediaRoutes(app);
   await registerAssetRoutes(app);
   await registerTagRoutes(app);
+  await registerPicRoutes(app, config);
   await registerIngestRoutes(app);
   await registerFileRoutes(app, config);
   await registerFrontendRoutes(app, config);

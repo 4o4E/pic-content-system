@@ -1,4 +1,4 @@
-export type Platform = "qq" | "napcat" | "telegram" | "discord" | "web" | "manual";
+export type Platform = "qq" | "napcat" | "telegram" | "discord" | "web" | "manual" | "import";
 
 export interface PlatformSource {
   platform: Platform;
@@ -10,5 +10,7 @@ export interface PlatformSource {
 
 export interface SourceBindingDto extends PlatformSource {
   id?: string;
+  sourceKey?: string;
+  sourceIndex?: number;
   raw?: unknown;
 }

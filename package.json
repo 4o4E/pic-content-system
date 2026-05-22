@@ -5,8 +5,12 @@
   "packageManager": "pnpm@10.30.2",
   "scripts": {
     "dev": "pnpm -r --parallel dev",
+    "test": "vitest run",
+    "test:db": "vitest run --config vitest.db.config.ts",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "build": "pnpm -r build",
-    "ci:test": "cross-env DATABASE_URL=postgresql://ci:ci@localhost:5432/pic_content_system?schema=public pnpm prisma:generate && cross-env DATABASE_URL=postgresql://ci:ci@localhost:5432/pic_content_system?schema=public pnpm prisma:validate && pnpm typecheck && pnpm build",
+    "ci:test": "cross-env DATABASE_URL=postgresql://ci:ci@localhost:5432/pic_content_system?schema=public pnpm prisma:generate && cross-env DATABASE_URL=postgresql://ci:ci@localhost:5432/pic_content_system?schema=public pnpm prisma:validate && pnpm test && pnpm typecheck && pnpm build",
     "typecheck": "pnpm --filter @pic/shared build && pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "release:dist": "node scripts/assemble-release.mjs",
@@ -17,8 +21,10 @@
   "devDependencies": {
     "@types/node": "^22.15.0",
     "@types/pg": "^8.20.0",
+    "@vitest/coverage-v8": "^4.1.7",
     "cross-env": "^10.1.0",
     "pg": "^8.21.0",
-    "typescript": "^5.8.0"
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.7"
   }
 }

@@ -17,6 +17,37 @@ export interface MediaContentDto {
   updatedAt: string;
 }
 
+export interface ImportPicImageDto {
+  contentBase64: string;
+  tags: string[];
+}
+
+export interface PicImageResultDto {
+  content: MediaContentDto;
+  file: MediaFileDto;
+  existed: boolean;
+}
+
+export interface PicRandomResultDto extends MediaContentDto {
+  fileMd5?: string;
+  fileUrl?: string;
+}
+
+export interface PicRandomQueryDto {
+  tags?: string[];
+  tagMode?: "and" | "or";
+  type?: MediaType;
+}
+
+export interface UpdateMediaTagsDto {
+  tags: string[];
+}
+
+export interface PatchMediaTagsDto {
+  addTags?: string[];
+  removeTags?: string[];
+}
+
 export interface CreateMediaContentDto {
   title?: string;
   tags: string[];

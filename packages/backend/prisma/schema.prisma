@@ -84,13 +84,15 @@ model SourceBinding {
   platformGroupId   String?  @map("platform_group_id")
   platformUserId    String?  @map("platform_user_id")
   platformFileId    String?  @map("platform_file_id")
+  sourceKey         String?  @map("source_key")
+  sourceIndex       Int?     @map("source_index")
   raw               Json     @default("{}")
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   content MediaContent? @relation(fields: [contentId], references: [id], onDelete: Cascade)
   assets  MediaAsset[]
 
-  @@unique([platform, platformMessageId])
+  @@unique([platform, platformMessageId, sourceKey])
   @@index([platform, platformGroupId])
   @@index([platform, platformUserId])
   @@map("source_binding")
@@ -140,6 +142,15 @@ model ContentTag {
   @@unique([contentId, tag])
   @@index([tag])
   @@map("content_tag")
+}
+
+model TagAlias {
+  alias     String   @id
+  tag       String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("tag_alias")
 }
 
 model IngestEvent {

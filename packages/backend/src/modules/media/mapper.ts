@@ -1,5 +1,6 @@
 import type { MediaAssetDto, MediaContentDto, MediaElement, MediaFileDto } from "@pic/shared";
-import type { MediaAsset, MediaContent, MediaFile, Prisma } from "@prisma/client";
+import type { MediaAsset, MediaContent, MediaFile, Prisma, SourceBinding } from "@prisma/client";
+import { toSourceBindingDto } from "../source/source-service.js";
 
 function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
@@ -9,7 +10,9 @@ function asElements(value: Prisma.JsonValue): MediaElement[] {
   return Array.isArray(value) ? (value as unknown as MediaElement[]) : [];
 }
 
-export function toMediaContentDto(content: MediaContent): MediaContentDto {
+type MediaContentWithSources = MediaContent & { sources?: SourceBinding[] };
+
+export function toMediaContentDto(content: MediaContentWithSources): MediaContentDto {
   return {
     id: content.id,
     type: content.type,
@@ -19,6 +22,7 @@ export function toMediaContentDto(content: MediaContent): MediaContentDto {
     sign: content.sign,
     auditState: content.auditState,
     likeCount: Number(content.likeCount),
+    source: content.sources?.[0] ? toSourceBindingDto(content.sources[0]) : undefined,
     createdAt: content.createdAt.toISOString(),
     updatedAt: content.updatedAt.toISOString(),
   };

@@ -28,13 +28,13 @@ ENV FRONTEND_DIST_DIR="packages/backend/public"
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/backend/package.json packages/backend/package.json
+RUN pnpm install --prod --frozen-lockfile
 COPY --from=builder /app/packages/shared/dist packages/shared/dist
 COPY --from=builder /app/packages/backend/dist packages/backend/dist
 COPY --from=builder /app/packages/backend/prisma packages/backend/prisma
 COPY --from=builder /app/packages/backend/public packages/backend/public
 COPY docker/entrypoint.sh docker/entrypoint.sh
-RUN pnpm install --prod --frozen-lockfile \
-  && pnpm --filter @pic/backend prisma:generate \
+RUN pnpm --filter @pic/backend prisma:generate \
   && chmod +x docker/entrypoint.sh
 EXPOSE 3000
 VOLUME ["/data/files"]

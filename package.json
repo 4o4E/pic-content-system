@@ -7,7 +7,7 @@
     "dev": "pnpm -r --parallel dev",
     "build": "pnpm -r build",
     "ci:test": "cross-env DATABASE_URL=postgresql://ci:ci@localhost:5432/pic_content_system?schema=public pnpm prisma:generate && cross-env DATABASE_URL=postgresql://ci:ci@localhost:5432/pic_content_system?schema=public pnpm prisma:validate && pnpm typecheck && pnpm build",
-    "typecheck": "pnpm -r typecheck",
+    "typecheck": "pnpm --filter @pic/shared build && pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "release:dist": "node scripts/assemble-release.mjs",
     "release:package": "pnpm build && pnpm release:dist",

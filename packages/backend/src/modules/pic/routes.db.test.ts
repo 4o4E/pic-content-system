@@ -14,6 +14,7 @@ function pngBuffer(width: number, height: number) {
 }
 
 async function cleanDatabase() {
+  await prisma.auditEvent.deleteMany();
   await prisma.mediaAsset.deleteMany();
   await prisma.sourceBinding.deleteMany();
   await prisma.contentTag.deleteMany();
@@ -74,10 +75,12 @@ describe("pic routes db", () => {
       file: { mimeType: "image/png", format: "png", width: 32, height: 16 },
     });
 
-    const contentCount = await prisma.mediaContent.count();
+    const contentId = payload.data.content.id;
+    const fileMd5 = payload.data.file.md5;
+    const contentCount = await prisma.mediaContent.count({ where: { id: contentId } });
     const tagCount = await prisma.contentTag.count({ where: { tag: "弔图" } });
-    const source = await prisma.sourceBinding.findFirstOrThrow();
-    const file = await prisma.mediaFile.findFirstOrThrow();
+    const source = await prisma.sourceBinding.findFirstOrThrow({ where: { contentId } });
+    const file = await prisma.mediaFile.findUniqueOrThrow({ where: { md5: fileMd5 } });
     const filePath = path.join(filesDir, file.storageKey);
 
     expect(contentCount).toBe(1);

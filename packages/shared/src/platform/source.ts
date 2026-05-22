@@ -14,3 +14,14 @@ export interface SourceBindingDto extends PlatformSource {
   sourceIndex?: number;
   raw?: unknown;
 }
+
+export interface SourceProfileDto {
+  platform: Platform;
+  userId?: string;
+  groupId?: string;
+  messageId?: string;
+  fileId?: string;
+  displayName?: string;
+  avatarUrl?: string;
+  groupName?: string;
+}

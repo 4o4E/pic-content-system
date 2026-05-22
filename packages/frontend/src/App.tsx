@@ -1,4 +1,17 @@
-import type { IngestEventDto, MediaAssetDto, MediaAssetStatus, MediaContentDto, MediaElement, MediaType, TagDto, WorkspaceDraftDto } from "@pic/shared";
+import type {
+  AuditListItemDto,
+  AuditState,
+  IngestEventDto,
+  MediaAssetDto,
+  MediaAssetStatus,
+  MediaContentDto,
+  MediaElement,
+  MediaType,
+  SourceProfileDto,
+  TagAliasDto,
+  TagDto,
+  WorkspaceDraftDto,
+} from "@pic/shared";
 import type { LucideIcon } from "lucide-react";
 import { useEffect, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import {
@@ -35,24 +48,33 @@ import { Card } from "@/components/ui/card";
 import { createImagePreviewState, emptyImagePreviewState, ImagePreviewViewer, type ImagePreviewItem } from "@/components/media/image-preview";
 import { cn } from "@/lib/utils";
 import {
+  approveAudit,
+  archiveAudit,
   batchUpdateMediaTags,
   clearStoredToken,
+  createTagAlias,
   createMedia,
   deleteAssets,
+  deleteAudit,
   deleteMediaContents,
+  deleteTagAlias,
   fileUrl,
   getStoredToken,
   ignoreAsset,
   listAssets,
+  listAudits,
   listIngestEvents,
   listMedia,
+  listTagAliases,
   listTags,
   loginWithToken,
+  rejectAudit,
   restoreMediaContentsToWorkspace,
+  resetAudit,
 } from "@/api/client";
 
 type ThemeMode = "light" | "dark";
-type PageKey = "home" | "workspace" | "library" | "events" | "tags";
+type PageKey = "home" | "workspace" | "library" | "audits" | "events" | "tags";
 type TagMode = "and" | "or";
 type ContentCardSize = "small" | "medium" | "large";
 type LibrarySort = "time_desc" | "time_asc";
@@ -77,6 +99,7 @@ const pageItems: Array<{ key: PageKey; label: string; icon: LucideIcon }> = [
   { key: "home", label: "主页", icon: LayoutDashboard },
   { key: "workspace", label: "工作台", icon: Layers3 },
   { key: "library", label: "内容库", icon: Database },
+  { key: "audits", label: "审批管理", icon: CheckCircle2 },
   { key: "events", label: "接入事件", icon: ListChecks },
   { key: "tags", label: "标签管理", icon: Tags },
 ];
@@ -99,6 +122,14 @@ const kindOptions: Array<{ label: string; value: MediaType | "all" }> = [
   { label: "文件", value: "file" },
 ];
 
+const auditStateOptions: Array<{ label: string; value: AuditState | "all" }> = [
+  { label: "待审批", value: "pending" },
+  { label: "已通过", value: "approved" },
+  { label: "已拒绝", value: "rejected" },
+  { label: "已归档", value: "archived" },
+  { label: "全部", value: "all" },
+];
+
 const contentCardSizeOptions: Array<{ label: string; value: ContentCardSize; minWidth: string }> = [
   { label: "小", value: "small", minWidth: "200px" },
   { label: "中", value: "medium", minWidth: "260px" },
@@ -119,6 +150,7 @@ const pagePaths: Record<PageKey, string> = {
   home: "/",
   workspace: "/workspace",
   library: "/library",
+  audits: "/audits",
   events: "/events",
   tags: "/tags",
 };
@@ -279,6 +311,10 @@ function updateTagSearchQuery(query: string) {
   replaceRouteQuery(pagePaths.tags, {
     q: query.trim() || undefined,
   });
+}
+
+function normalizeTagAliasInput(alias: string) {
+  return alias.trim().toLowerCase();
 }
 
 function elementSummary(element: MediaElement) {
@@ -1731,10 +1767,163 @@ function ContentLibraryPage({ onOpenImagePreview }: { onOpenImagePreview: (eleme
   );
 }
 
+function auditStateLabel(state: AuditState) {
+  return auditStateOptions.find((option) => option.value === state)?.label ?? state;
+}
+
+function SourceProfileSummary({ profile }: { profile?: SourceProfileDto }) {
+  if (!profile) return <div className="text-xs text-muted-foreground">暂无来源资料</div>;
+  const isQq = profile.platform === "qq" || profile.platform === "napcat";
+  const title = isQq ? profile.displayName || profile.userId || "QQ 用户" : profile.displayName || profile.userId || profile.platform;
+  return (
+    <div className="flex min-w-0 items-center gap-3 rounded-md border border-border bg-surface-muted p-3">
+      {profile.avatarUrl ? (
+        <img className="h-10 w-10 shrink-0 rounded-md object-cover" src={profile.avatarUrl} alt="来源头像" loading="lazy" />
+      ) : (
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-surface text-xs text-muted-foreground">{profile.platform}</div>
+      )}
+      <div className="min-w-0 text-xs">
+        <div className="truncate font-medium text-foreground">{title}</div>
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-subtle-foreground">
+          <span>平台：{isQq ? "QQ" : profile.platform}</span>
+          {profile.userId && <span>用户：{profile.userId}</span>}
+          {profile.groupId && <span>群：{profile.groupId}</span>}
+          {profile.groupName && <span>群名：{profile.groupName}</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AuditsPage({ onOpenImagePreview }: { onOpenImagePreview: (elements: MediaElement[], activeElement: MediaElement) => void }) {
+  const [state, setState] = useState<AuditState | "all">("pending");
+  const [type, setType] = useState<MediaType | "all">("all");
+  const [items, setItems] = useState<AuditListItemDto[]>([]);
+  const [previewContent, setPreviewContent] = useState<AuditListItemDto | null>(null);
+  const [previewElement, setPreviewElement] = useState<MediaElement | null>(null);
+  const [busyId, setBusyId] = useState("");
+  const [total, setTotal] = useState(0);
+  const [error, setError] = useState("");
+
+  async function refreshAudits() {
+    const page = await listAudits({ state, type, size: 60 });
+    setItems(page.data);
+    setTotal(page.total);
+    setError("");
+  }
+
+  useEffect(() => {
+    refreshAudits().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载审批内容失败"));
+  }, [state, type]);
+
+  function openElementPreview(element: MediaElement, elements: MediaElement[]) {
+    if (element.type === "image") {
+      onOpenImagePreview(elements, element);
+      return;
+    }
+    setPreviewElement(element);
+  }
+
+  async function runAuditAction(id: string, action: "approve" | "reject" | "archive" | "reset" | "delete") {
+    if (action === "delete" && !window.confirm("确认删除这条内容？")) return;
+    const body = { operator: { platform: "web" as const }, reason: "前端审批页面操作" };
+    setBusyId(id);
+    try {
+      if (action === "approve") await approveAudit(id, body);
+      if (action === "reject") await rejectAudit(id, body);
+      if (action === "archive") await archiveAudit(id, body);
+      if (action === "reset") await resetAudit(id, body);
+      if (action === "delete") await deleteAudit(id, body);
+      await refreshAudits();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "审批操作失败");
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  return (
+    <section className="space-y-4">
+      <Card className="flex flex-wrap items-center justify-between gap-3 p-4">
+        <div>
+          <h1 className="text-base font-semibold">审批管理</h1>
+          <p className="mt-1 text-xs text-muted-foreground">当前筛选 {total} 条，默认展示待审批内容。</p>
+        </div>
+        <div className="flex flex-wrap gap-3">
+          <SelectField label="审批状态" value={state} options={auditStateOptions} onChange={setState} />
+          <SelectField label="内容类型" value={type} options={kindOptions} onChange={setType} />
+          <Button variant="secondary" onClick={() => void refreshAudits()}>
+            刷新
+          </Button>
+        </div>
+      </Card>
+      {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
+      <div className="grid gap-4 xl:grid-cols-2">
+        {items.map((content) => (
+          <Card key={content.id} className="space-y-3 p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="truncate text-sm font-semibold">{content.title ?? "未命名内容"}</h2>
+                <p className="mt-1 font-mono text-xs text-subtle-foreground">{content.sign}</p>
+              </div>
+              <Badge className={content.auditState === "approved" ? "border-green-500/30 bg-green-500/10 text-green-600 dark:text-green-400" : ""}>
+                {auditStateLabel(content.auditState)}
+              </Badge>
+            </div>
+            <div className="aspect-video min-h-0">
+              <ContentPreview content={content} onOpenContent={setPreviewContent} onOpenElement={(element) => openElementPreview(element, content.elements)} />
+            </div>
+            <div className="flex max-h-16 flex-wrap gap-1 overflow-hidden">
+              {content.tags.map((tag) => (
+                <Badge key={tag} className="border-primary/30 bg-primary-muted text-primary-text">
+                  {tag}
+                </Badge>
+              ))}
+              {content.tags.length === 0 && <span className="text-xs text-muted-foreground">暂无 tag</span>}
+            </div>
+            <SourceProfileSummary profile={content.sourceProfile} />
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button disabled={busyId === content.id} variant="primary" onClick={() => void runAuditAction(content.id, "approve")}>
+                通过
+              </Button>
+              <Button disabled={busyId === content.id} variant="secondary" onClick={() => void runAuditAction(content.id, "reject")}>
+                拒绝
+              </Button>
+              <Button disabled={busyId === content.id} variant="secondary" onClick={() => void runAuditAction(content.id, "archive")}>
+                归档
+              </Button>
+              <Button disabled={busyId === content.id} variant="secondary" onClick={() => void runAuditAction(content.id, "reset")}>
+                重置
+              </Button>
+              <Button disabled={busyId === content.id} variant="danger" onClick={() => void runAuditAction(content.id, "delete")}>
+                删除
+              </Button>
+            </div>
+          </Card>
+        ))}
+      </div>
+      {items.length === 0 && <Card className="p-8 text-center text-sm text-muted-foreground">没有符合条件的审批内容。</Card>}
+      {previewContent && <ContentDetailModal content={previewContent} onClose={() => setPreviewContent(null)} onOpenElement={(element) => openElementPreview(element, previewContent.elements)} />}
+      {previewElement && <MediaElementModal element={previewElement} onClose={() => setPreviewElement(null)} />}
+    </section>
+  );
+}
+
 function TagManagementPage() {
   const [query, setQuery] = useState(readTagSearchFromUrl);
   const [tags, setTags] = useState<TagDto[]>([]);
+  const [aliases, setAliases] = useState<TagAliasDto[]>([]);
+  const [aliasInput, setAliasInput] = useState("");
+  const [aliasTagInput, setAliasTagInput] = useState("");
+  const [editingAlias, setEditingAlias] = useState("");
   const [error, setError] = useState("");
+
+  async function refreshTagData() {
+    const [nextTags, nextAliases] = await Promise.all([listTags(query), listTagAliases(query)]);
+    setTags(nextTags);
+    setAliases(nextAliases);
+    setError("");
+  }
 
   useEffect(() => {
     function syncRouteState() {
@@ -1750,13 +1939,45 @@ function TagManagementPage() {
   }, [query]);
 
   useEffect(() => {
-    listTags(query)
-      .then((rows) => {
-        setTags(rows);
-        setError("");
-      })
+    refreshTagData()
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载 tag 失败"));
   }, [query]);
+
+  async function submitAlias() {
+    const alias = normalizeTagAliasInput(aliasInput);
+    const tag = aliasTagInput.trim();
+    if (!alias || !tag) return;
+    try {
+      await createTagAlias({ alias, tag });
+      if (editingAlias && normalizeTagAliasInput(editingAlias) !== alias) await deleteTagAlias(editingAlias);
+      setAliasInput("");
+      setAliasTagInput("");
+      setEditingAlias("");
+      await refreshTagData();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "保存 alias 失败");
+    }
+  }
+
+  function startEditAlias(row: TagAliasDto) {
+    setAliasInput(row.alias);
+    setAliasTagInput(row.tag);
+    setEditingAlias(row.alias);
+  }
+
+  async function removeAlias(alias: string) {
+    try {
+      await deleteTagAlias(alias);
+      if (editingAlias === alias) {
+        setAliasInput("");
+        setAliasTagInput("");
+        setEditingAlias("");
+      }
+      await refreshTagData();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "删除 alias 失败");
+    }
+  }
 
   return (
     <section className="space-y-4">
@@ -1771,7 +1992,70 @@ function TagManagementPage() {
           />
         </div>
       </Card>
+      <Card className="space-y-3 p-4">
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="min-w-[220px] flex-1">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">Alias</span>
+            <input
+              className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+              placeholder="例如 dt"
+              value={aliasInput}
+              onChange={(event) => setAliasInput(event.target.value)}
+            />
+          </label>
+          <label className="min-w-[220px] flex-1">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">目标 tag</span>
+            <input
+              className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+              placeholder="例如 弔图"
+              value={aliasTagInput}
+              onChange={(event) => setAliasTagInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void submitAlias();
+              }}
+            />
+          </label>
+          <Button disabled={!aliasInput.trim() || !aliasTagInput.trim()} variant="primary" onClick={() => void submitAlias()}>
+            {editingAlias ? "更新 alias" : "创建 alias"}
+          </Button>
+          {editingAlias && (
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setAliasInput("");
+                setAliasTagInput("");
+                setEditingAlias("");
+              }}
+            >
+              取消
+            </Button>
+          )}
+        </div>
+      </Card>
       {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
+      <Card className="overflow-hidden">
+        <div className="border-b border-border px-4 py-3 text-sm font-semibold">Alias 列表</div>
+        {aliases.map((row) => (
+          <div key={row.alias} className="grid gap-3 border-b border-border px-4 py-3 text-sm last:border-b-0 md:grid-cols-[1fr_1fr_auto] md:items-center">
+            <div className="min-w-0">
+              <div className="truncate font-medium">{row.alias}</div>
+              <div className="mt-1 text-xs text-subtle-foreground">输入别名会解析到目标 tag</div>
+            </div>
+            <div className="min-w-0">
+              <Badge className="border-primary/30 bg-primary-muted text-primary-text">{row.tag}</Badge>
+            </div>
+            <div className="flex gap-2">
+              <Button className="h-8" variant="secondary" onClick={() => startEditAlias(row)}>
+                编辑
+              </Button>
+              <Button className="h-8" variant="danger" onClick={() => void removeAlias(row.alias)}>
+                删除
+              </Button>
+            </div>
+          </div>
+        ))}
+        {aliases.length === 0 && <div className="p-6 text-center text-sm text-muted-foreground">没有找到匹配的 alias。</div>}
+      </Card>
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {tags.map((tag) => (
           <Card key={tag.name} className="flex items-center justify-between p-4">
@@ -2228,6 +2512,7 @@ export default function App() {
             />
           )}
           {page === "library" && <ContentLibraryPage onOpenImagePreview={openImagePreview} />}
+          {page === "audits" && <AuditsPage onOpenImagePreview={openImagePreview} />}
           {page === "events" && <EventsPage />}
           {page === "tags" && <TagManagementPage />}
         </main>

@@ -39,6 +39,15 @@ enum WorkspaceDraftStatus {
   discarded
 }
 
+enum AuditAction {
+  submit
+  approve
+  reject
+  archive
+  reset
+  delete
+}
+
 model MediaFile {
   md5             String   @id @db.Char(32)
   storageKey      String   @map("storage_key")
@@ -151,6 +160,23 @@ model TagAlias {
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@map("tag_alias")
+}
+
+model AuditEvent {
+  id               String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  contentId        String       @map("content_id") @db.Uuid
+  action           AuditAction
+  fromState        AuditState?  @map("from_state")
+  toState          AuditState?  @map("to_state")
+  operatorPlatform String?      @map("operator_platform")
+  operatorUserId   String?      @map("operator_user_id")
+  reason           String?
+  raw              Json         @default("{}")
+  createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([contentId, createdAt])
+  @@index([toState, createdAt])
+  @@map("audit_event")
 }
 
 model IngestEvent {

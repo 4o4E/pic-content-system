@@ -1,5 +1,5 @@
 import type { MediaElement, MediaType } from "./element";
-import type { SourceBindingDto } from "../platform/source";
+import type { SourceBindingDto, SourceProfileDto } from "../platform/source";
 
 export type AuditState = "pending" | "approved" | "rejected" | "archived";
 
@@ -19,11 +19,14 @@ export interface MediaContentDto {
 
 export interface ImportPicImageDto {
   contentBase64: string;
-  tags: string[];
+  tags?: string[];
+  auditRequired?: boolean;
+  source?: SourceBindingDto;
 }
 
 export interface PicImageResultDto {
-  content: MediaContentDto;
+  content?: MediaContentDto;
+  asset?: import("./asset").MediaAssetDto;
   file: MediaFileDto;
   existed: boolean;
 }
@@ -46,6 +49,37 @@ export interface UpdateMediaTagsDto {
 export interface PatchMediaTagsDto {
   addTags?: string[];
   removeTags?: string[];
+}
+
+export interface AuditOperatorDto {
+  platform?: SourceBindingDto["platform"];
+  userId?: string;
+  raw?: unknown;
+}
+
+export interface AuditActionDto {
+  operator?: AuditOperatorDto;
+  reason?: string;
+}
+
+export interface AuditEventDto {
+  id: string;
+  contentId: string;
+  action: "submit" | "approve" | "reject" | "archive" | "reset" | "delete";
+  fromState?: AuditState;
+  toState?: AuditState;
+  operator?: AuditOperatorDto;
+  reason?: string;
+  createdAt: string;
+}
+
+export interface AuditListItemDto extends MediaContentDto {
+  sourceProfile?: SourceProfileDto;
+}
+
+export interface AuditDetailDto {
+  content: AuditListItemDto;
+  events: AuditEventDto[];
 }
 
 export interface CreateMediaContentDto {

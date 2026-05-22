@@ -5,6 +5,8 @@ export default defineConfig({
     environment: "node",
     include: ["packages/**/*.db.test.ts"],
     setupFiles: ["./vitest.db.setup.ts"],
+    fileParallelism: false,
+    maxWorkers: 1,
     testTimeout: 30000,
     hookTimeout: 30000,
   },

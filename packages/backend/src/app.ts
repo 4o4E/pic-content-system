@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadConfig, type AppConfig } from "./config/env.js";
 import { registerAssetRoutes } from "./modules/asset/routes.js";
+import { registerAuditRoutes } from "./modules/audit/routes.js";
 import { registerAuthGuard, registerAuthRoutes } from "./modules/auth/routes.js";
 import { registerFileRoutes } from "./modules/file/routes.js";
 import { registerHealthRoutes } from "./modules/health/routes.js";
@@ -51,6 +52,7 @@ export async function createApp(config: AppConfig = loadConfig()) {
   registerAuthGuard(app, config);
   await registerMediaRoutes(app);
   await registerAssetRoutes(app);
+  await registerAuditRoutes(app);
   await registerTagRoutes(app);
   await registerPicRoutes(app, config);
   await registerIngestRoutes(app);

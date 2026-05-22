@@ -1,5 +1,8 @@
 import type {
   ApiResp,
+  AuditActionDto,
+  AuditListItemDto,
+  AuditState,
   BatchDeleteMediaAssetsDto,
   BatchDeleteMediaContentsDto,
   AuthSessionDto,
@@ -17,7 +20,10 @@ import type {
   MediaFileDto,
   MediaType,
   PageResp,
+  Platform,
+  TagAliasDto,
   TagDto,
+  UpsertTagAliasDto,
 } from "@pic/shared";
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
@@ -36,6 +42,18 @@ export interface MediaQuery {
   tags?: string[];
   tagMode?: "and" | "or";
   sort?: "time_desc" | "time_asc";
+  type?: MediaType | "all";
+  auditState?: AuditState | "all";
+  sourcePlatform?: Platform;
+  sourceGroupId?: string;
+  sourceUserId?: string;
+  page?: number;
+  size?: number;
+}
+
+export interface AuditQuery {
+  state?: AuditState | "all";
+  type?: MediaType | "all";
   page?: number;
   size?: number;
 }
@@ -129,6 +147,11 @@ export function listMedia(query: MediaQuery = {}) {
       tags: query.tags?.join(","),
       tagMode: query.tagMode,
       sort: query.sort,
+      type: query.type,
+      auditState: query.auditState,
+      sourcePlatform: query.sourcePlatform,
+      sourceGroupId: query.sourceGroupId,
+      sourceUserId: query.sourceUserId,
       page: query.page ?? 1,
       size: query.size ?? 60,
     }),
@@ -165,6 +188,62 @@ export function restoreMediaContentsToWorkspace(body: BatchRestoreMediaContentsT
 
 export function listTags(q?: string) {
   return request<TagDto[]>(withQuery("/api/tags", { q }));
+}
+
+export function listTagAliases(q?: string) {
+  return request<TagAliasDto[]>(withQuery("/api/tag-aliases", { q }));
+}
+
+export function createTagAlias(body: UpsertTagAliasDto) {
+  return request<TagAliasDto>("/api/tag-aliases", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteTagAlias(alias: string) {
+  return request<{ deleted: number }>(`/api/tag-aliases/${encodeURIComponent(alias)}`, { method: "DELETE" });
+}
+
+export function listAudits(query: AuditQuery = {}) {
+  return request<PageResp<AuditListItemDto>>(
+    withQuery("/api/audits", {
+      state: query.state,
+      type: query.type,
+      page: query.page ?? 1,
+      size: query.size ?? 20,
+    }),
+  );
+}
+
+function submitAuditAction(id: string, action: "approve" | "reject" | "archive" | "reset", body: AuditActionDto = {}) {
+  return request<AuditListItemDto>(`/api/audits/${id}/${action}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function approveAudit(id: string, body?: AuditActionDto) {
+  return submitAuditAction(id, "approve", body);
+}
+
+export function rejectAudit(id: string, body?: AuditActionDto) {
+  return submitAuditAction(id, "reject", body);
+}
+
+export function archiveAudit(id: string, body?: AuditActionDto) {
+  return submitAuditAction(id, "archive", body);
+}
+
+export function resetAudit(id: string, body?: AuditActionDto) {
+  return submitAuditAction(id, "reset", body);
+}
+
+export function deleteAudit(id: string, body: AuditActionDto = {}) {
+  return request<{ deleted: number }>(`/api/audits/${id}`, {
+    method: "DELETE",
+    body: JSON.stringify(body),
+  });
 }
 
 export function listIngestEvents(page = 1, size = 50) {

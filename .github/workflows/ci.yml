@@ -75,3 +75,9 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Assemble release dist
+        run: pnpm release:dist
+
+      - name: Build release Docker image
+        run: docker build -t pic-content-system:ci dist/release/pic-content-system

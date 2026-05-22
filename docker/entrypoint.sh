@@ -2,7 +2,15 @@
 set -eu
 
 if [ "${RUN_MIGRATIONS:-true}" = "true" ]; then
-  pnpm --filter @pic/backend prisma:deploy
+  if [ -f "packages/backend/package.json" ]; then
+    pnpm --filter @pic/backend prisma:deploy
+  else
+    pnpm prisma:deploy
+  fi
 fi
 
-exec node packages/backend/dist/main.js
+if [ -f "packages/backend/dist/main.js" ]; then
+  exec node packages/backend/dist/main.js
+fi
+
+exec node dist/main.js

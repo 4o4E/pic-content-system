@@ -90,6 +90,62 @@ docker compose --env-file .env.production up -d --build
 
 默认访问地址为 `http://localhost:3000`。首次启动时容器会执行 `prisma migrate deploy`，通过 `RUN_MIGRATIONS=false` 可以关闭自动迁移。媒体文件存储在 Compose volume `media_files`，数据库存储在 `postgres_data`。
 
+### 已有 PostgreSQL + 绝对路径部署
+
+已有 PostgreSQL 实例时，不建议直接复用默认 `compose.yaml`，因为它会额外启动内置 `db` 服务，并把媒体文件放到 Docker 命名卷。可以单独创建一个只包含 `app` 服务的 Compose 文件，例如 `compose.external-pg.yaml`：
+
+```yaml
+services:
+  app:
+    image: ${APP_IMAGE:-pic-content-system:local}
+    build:
+      context: .
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?必须配置已有 PostgreSQL 的 DATABASE_URL}
+      ACCESS_TOKEN: ${ACCESS_TOKEN:?必须配置 ACCESS_TOKEN}
+      FILES_DIR: /data/files
+      PORT: 3000
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+    volumes:
+      # 左侧必须替换为宿主机真实存在的绝对路径；右侧保持和 FILES_DIR 一致
+      - ${HOST_FILES_DIR:?必须配置宿主机媒体文件绝对路径}:/data/files
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+```
+
+配套环境变量示例：
+
+```env
+APP_IMAGE=ghcr.io/<owner>/<repo>:vX.Y.Z
+APP_PORT=3000
+ACCESS_TOKEN=change-this-access-token
+DATABASE_URL=postgresql://pic:change-this-password@postgres.example.com:5432/pic_content_system?schema=public
+HOST_FILES_DIR=F:/data/pic-content-system/files
+RUN_MIGRATIONS=true
+```
+
+如果 PostgreSQL 在 Docker Desktop 宿主机上，容器内不能用 `localhost` 访问宿主机 PostgreSQL，通常把 `DATABASE_URL` 的主机名写成 `host.docker.internal`；如果 PostgreSQL 在同一个 Docker 网络内，主机名写对应服务名或容器名；如果 PostgreSQL 是远程数据库，主机名写数据库域名或 IP。
+
+首次启动前需要确保数据库已存在、账号有建表和迁移权限，并提前创建 `HOST_FILES_DIR` 对应目录。启动命令：
+
+```powershell
+docker compose --env-file .env.production -f compose.external-pg.yaml up -d
+```
+
+使用本地构建镜像时保留 `build.context` 并执行：
+
+```powershell
+docker compose --env-file .env.production -f compose.external-pg.yaml up -d --build
+```
+
+迁移默认由容器启动时执行 `prisma migrate deploy`；如果数据库迁移由其他流程统一执行，把 `RUN_MIGRATIONS=false` 写入 `.env.production`。
+
 使用 GitHub Release 镜像部署时，把 `.env.production` 中的 `APP_IMAGE` 改为：
 
 ```env

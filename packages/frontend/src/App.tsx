@@ -2199,11 +2199,11 @@ export default function App() {
   if (!token) return <LoginPage theme={theme} onThemeChange={changeTheme} onLogin={handleLogin} />;
 
   return (
-    <div className="h-full overflow-y-auto bg-background text-foreground">
+    <div className="h-full bg-background text-foreground">
       <Sidebar page={page} onPageChange={changePage} />
-      <div className="min-w-0 lg:pl-60">
-        <TopBar page={page} theme={theme} onThemeChange={changeTheme} onLogout={handleLogout} />
-        <main className="flex min-h-screen flex-col gap-4 px-4 pb-4 pt-[4.5rem] lg:px-6 lg:pb-6">
+      <TopBar page={page} theme={theme} onThemeChange={changeTheme} onLogout={handleLogout} />
+      <div className="fixed inset-x-0 bottom-0 top-14 overflow-y-auto lg:left-60">
+        <main className="flex min-h-full flex-col gap-4 px-4 py-4 lg:px-6 lg:pb-6">
           {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
           {page === "home" && <HomePage stats={stats} contents={contents} events={events} />}
           {page === "workspace" && (

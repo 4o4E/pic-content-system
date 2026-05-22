@@ -65,6 +65,14 @@ function mediaFile(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function pngBase64(width = 1, height = 1) {
+  const buffer = Buffer.alloc(24);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(buffer, 0);
+  buffer.writeUInt32BE(width, 16);
+  buffer.writeUInt32BE(height, 20);
+  return buffer.toString("base64");
+}
+
 function contentRow(overrides: Record<string, unknown> = {}) {
   return {
     id: "00000000-0000-4000-8000-000000000001",
@@ -167,7 +175,7 @@ describe("pic routes", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/pic/images",
-      payload: { contentBase64: Buffer.from("fake png").toString("base64"), tags: ["DT"], auditRequired: true },
+      payload: { contentBase64: pngBase64(12, 8), tags: ["DT"], auditRequired: true },
     });
     await app.close();
 
@@ -227,7 +235,7 @@ describe("pic routes", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/pic/images",
-      payload: { contentBase64: Buffer.from("fake png").toString("base64") },
+      payload: { contentBase64: pngBase64(12, 8) },
     });
     await app.close();
 
@@ -289,7 +297,7 @@ describe("pic routes", () => {
       method: "POST",
       url: "/api/pic/images",
       payload: {
-        contentBase64: Buffer.from("fake png").toString("base64"),
+        contentBase64: pngBase64(12, 8),
         tags: ["表情"],
         source: {
           platform: "qq",
@@ -331,6 +339,25 @@ describe("pic routes", () => {
     });
   });
 
+  it("导入非图片内容时返回 400 且不落库", async () => {
+    const app = await createPicOnlyApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/pic/images",
+      payload: {
+        contentBase64: Buffer.from('{"retcode":-5503007,"retmsg":"download url has expired"}').toString("base64"),
+        tags: ["弔图"],
+      },
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ success: false, message: "上传内容不是可识别的图片文件" });
+    expect(mockStoreMediaFile).not.toHaveBeenCalled();
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
   it("导入重复图片时合并 tag 并返回 existed", async () => {
     const file = mediaFile({ md5: "c".repeat(32), storageKey: "objects/cc/cc/file.png", width: 1, height: 1 });
     mockStoreMediaFile.mockResolvedValue({
@@ -364,7 +391,7 @@ describe("pic routes", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/pic/images",
-      payload: { contentBase64: Buffer.from("fake png").toString("base64"), tags: ["弔图"] },
+      payload: { contentBase64: pngBase64(1, 1), tags: ["弔图"] },
     });
     await app.close();
 

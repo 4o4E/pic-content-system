@@ -3,6 +3,7 @@ import type { ApiResp, ImportPicImageDto, MediaElement, MediaType, PicImageResul
 import type { Prisma } from "@prisma/client";
 import type { AppConfig } from "../../config/env.js";
 import { prisma } from "../../db/prisma.js";
+import { inspectFileBuffer } from "../file/file-inspector.js";
 import { storeMediaFile } from "../file/file-storage.js";
 import { contentSign } from "../media/media-utils.js";
 import { toMediaAssetDto, toMediaContentDto, toMediaFileDto } from "../media/mapper.js";
@@ -67,8 +68,12 @@ export async function registerPicRoutes(app: FastifyInstance, config: AppConfig)
     };
   });
 
-  app.post<{ Body: ImportPicImageDto; Reply: ApiResp<PicImageResultDto> }>("/api/pic/images", async (request) => {
+  app.post<{ Body: ImportPicImageDto; Reply: ApiResp<PicImageResultDto> }>("/api/pic/images", async (request, reply) => {
     const buffer = Buffer.from(request.body.contentBase64, "base64");
+    const preflight = inspectFileBuffer(buffer);
+    if (!preflight.mimeType.startsWith("image/")) {
+      return reply.code(400).send({ success: false, message: "上传内容不是可识别的图片文件" });
+    }
     const result = await prisma.$transaction(async (tx) => {
       const { file, inspection } = await storeMediaFile(tx, config, buffer);
       const element = buildImageElement(file.md5, inspection.format, inspection.width, inspection.height);

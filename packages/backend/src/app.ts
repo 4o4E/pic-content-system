@@ -15,9 +15,10 @@ import { registerPicRoutes } from "./modules/pic/routes.js";
 import { registerTagRoutes } from "./modules/tag/routes.js";
 
 async function registerFrontendRoutes(app: FastifyInstance, config: AppConfig) {
-  const staticRoot = path.resolve(process.cwd(), config.frontendDistDir);
+  const candidates = Array.from(new Set([config.frontendDistDir, "public", "packages/backend/public"]));
+  const staticRoot = candidates.map((candidate) => path.resolve(process.cwd(), candidate)).find((candidate) => fs.existsSync(path.join(candidate, "index.html")));
+  if (!staticRoot) return;
   const indexFile = path.join(staticRoot, "index.html");
-  if (!fs.existsSync(indexFile)) return;
 
   await app.register(fastifyStatic, {
     root: staticRoot,

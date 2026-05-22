@@ -81,3 +81,20 @@ jobs:
 
       - name: Build release Docker image
         run: docker build -t pic-content-system:ci dist/release/pic-content-system
+
+      - name: Smoke test release Docker image
+        shell: bash
+        run: |
+          docker run -d --rm --name pic-content-system-ci \
+            -e ACCESS_TOKEN=test \
+            -e RUN_MIGRATIONS=false \
+            -p 3000:3000 \
+            pic-content-system:ci
+          trap 'docker stop pic-content-system-ci' EXIT
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:3000/health >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:3000/ | grep -q '<!doctype html>'

@@ -67,17 +67,3 @@ textarea,
 select {
   font: inherit;
 }
-
-.react-viewer:not(.react-viewer-inline) {
-  inset: 0 !important;
-  pointer-events: none;
-  position: fixed !important;
-  z-index: 1200 !important;
-}
-
-.react-viewer-mask,
-.react-viewer-canvas,
-.react-viewer-footer,
-.react-viewer-close {
-  pointer-events: auto;
-}

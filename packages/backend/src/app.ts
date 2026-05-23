@@ -45,7 +45,7 @@ export async function createApp(config: AppConfig = loadConfig()) {
           colorize: false,
           ignore: "pid,hostname",
           singleLine: true,
-          translateTime: "yyyy-mm-dd HH:MM:ss.l",
+          translateTime: "SYS:yyyy-mm-dd HH:MM:ss.l",
         },
       },
     },

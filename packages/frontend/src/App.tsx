@@ -321,6 +321,7 @@ function normalizeTagAliasInput(alias: string) {
 
 function formatDateTime(value: string) {
   return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -437,6 +438,9 @@ function TagSelectInput({
   placeholder,
   helperText,
   className,
+  suggestions: staticSuggestions,
+  excludeTags = [],
+  allowCreate = true,
 }: {
   label: string;
   selectedTags: string[];
@@ -444,15 +448,27 @@ function TagSelectInput({
   placeholder: string;
   helperText?: string;
   className?: string;
+  suggestions?: TagDto[];
+  excludeTags?: string[];
+  allowCreate?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [suggestions, setSuggestions] = useState<TagDto[]>([]);
   const normalizedQuery = query.trim();
-  const visibleSuggestions = suggestions.filter((tag) => !selectedTags.includes(tag.name)).slice(0, 8);
-  const canCreate = parseTagInput(query).some((tag) => !selectedTags.includes(tag));
+  const excludedTagSet = new Set(excludeTags);
+  const effectiveSuggestions = staticSuggestions ?? suggestions;
+  const visibleSuggestions = effectiveSuggestions
+    .filter((tag) => !selectedTags.includes(tag.name) && !excludedTagSet.has(tag.name))
+    .filter((tag) => !normalizedQuery || tagMatchesKeyword(tag, normalizedQuery))
+    .slice(0, 8);
+  const canCreate = allowCreate && parseTagInput(query).some((tag) => !selectedTags.includes(tag) && !excludedTagSet.has(tag));
 
   useEffect(() => {
+    if (staticSuggestions) {
+      setSuggestions([]);
+      return;
+    }
     if (!open) {
       setSuggestions([]);
       return;
@@ -470,10 +486,15 @@ function TagSelectInput({
     return () => {
       ignore = true;
     };
-  }, [normalizedQuery, open]);
+  }, [normalizedQuery, open, staticSuggestions]);
 
   function addTags(tags: string[]) {
-    const next = Array.from(new Set([...selectedTags, ...tags.map((tag) => tag.trim()).filter(Boolean)]));
+    const suggestionNameSet = allowCreate ? undefined : new Set(effectiveSuggestions.map((tag) => tag.name));
+    const normalizedTags = tags
+      .map((tag) => tag.trim())
+      .filter((tag) => tag && !excludedTagSet.has(tag))
+      .filter((tag) => !suggestionNameSet || suggestionNameSet.has(tag));
+    const next = Array.from(new Set([...selectedTags, ...normalizedTags]));
     onChange(next);
     setQuery("");
     setOpen(true);
@@ -1342,6 +1363,16 @@ function ContentLibraryPage({ onOpenImagePreview }: { onOpenImagePreview: (eleme
     gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${cardMinWidth}), 1fr))`,
   };
   const commonTags = tags.slice(0, 10);
+  const selectedContents = contents.filter((content) => selectedContentIds.includes(content.id));
+  const selectedContentTagCounts = selectedContents.reduce((counts, content) => {
+    for (const tag of content.tags) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+    return counts;
+  }, new Map<string, number>());
+  const selectedContentTags = Array.from(selectedContentTagCounts.entries())
+    .sort(([left], [right]) => left.localeCompare(right, "zh-CN"))
+    .map(([name, count]) => ({ name, count }));
+  const tagsPresentOnEverySelectedContent = selectedContentTags.filter((tag) => tag.count === selectedContents.length).map((tag) => tag.name);
+  const addableTags = tags.filter((tag) => !tagsPresentOnEverySelectedContent.includes(tag.name));
   const visibleTagSuggestions = tagQuery.trim()
     ? tagSuggestions.filter((tag) => !selectedTags.includes(tag.name)).slice(0, 8)
     : [];
@@ -1358,7 +1389,7 @@ function ContentLibraryPage({ onOpenImagePreview }: { onOpenImagePreview: (eleme
   }, []);
 
   async function refreshContents() {
-    const page = await listMedia({ q: query, tags: selectedTags, tagMode: mode, sort, page: currentPage, size: pageSize });
+    const page = await listMedia({ q: query, tags: selectedTags, tagMode: mode, sort, auditState: "approved", page: currentPage, size: pageSize });
     const nextTotalPages = Math.max(1, Math.ceil(page.total / pageSize));
     if (currentPage > nextTotalPages) {
       setCurrentPage(nextTotalPages);
@@ -1657,12 +1688,16 @@ function ContentLibraryPage({ onOpenImagePreview }: { onOpenImagePreview: (eleme
               label="添加 tag"
               selectedTags={parseTagInput(batchAddTags)}
               placeholder="输入 tag 名称筛选或新建"
+              suggestions={addableTags}
+              excludeTags={tagsPresentOnEverySelectedContent}
               onChange={(tags) => setBatchAddTags(tags.join(","))}
             />
             <TagSelectInput
               label="移除 tag"
               selectedTags={parseTagInput(batchRemoveTags)}
               placeholder="输入 tag 名称筛选"
+              suggestions={selectedContentTags}
+              allowCreate={false}
               onChange={(tags) => setBatchRemoveTags(tags.join(","))}
             />
             <div className="flex items-end">
@@ -1742,11 +1777,9 @@ function ContentLibraryPage({ onOpenImagePreview }: { onOpenImagePreview: (eleme
               <div className="min-w-0">
                 <h2 className="truncate text-sm font-semibold">{content.title ?? "未命名内容"}</h2>
                 <p className="mt-1 font-mono text-xs text-subtle-foreground">{content.sign}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{formatDateTime(content.createdAt)}</p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                <Badge className={content.auditState === "approved" ? "border-green-500/30 bg-green-500/10 text-green-600 dark:text-green-400" : ""}>
-                  {content.auditState}
-                </Badge>
                 <button
                   className={cn(
                     "flex h-7 w-7 items-center justify-center rounded-md border border-border bg-surface text-subtle-foreground transition-colors hover:border-primary/40 hover:text-primary-text",

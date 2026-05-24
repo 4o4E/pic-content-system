@@ -67,3 +67,28 @@ textarea,
 select {
   font: inherit;
 }
+
+[data-app-scroll-container] {
+  scrollbar-color: var(--border-hover) transparent;
+  scrollbar-width: thin;
+}
+
+[data-app-scroll-container]::-webkit-scrollbar {
+  width: 10px;
+}
+
+[data-app-scroll-container]::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+[data-app-scroll-container]::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: var(--border-hover);
+  background-clip: content-box;
+}
+
+[data-app-scroll-container]::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-foreground);
+  background-clip: content-box;
+}

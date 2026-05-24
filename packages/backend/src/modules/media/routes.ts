@@ -3,6 +3,7 @@ import type {
   AuditState,
   ApiResp,
   BatchDeleteMediaContentsDto,
+  BatchMergeMediaContentsDto,
   BatchRestoreMediaContentsToWorkspaceDto,
   BatchRestoreMediaContentsToWorkspaceResultDto,
   BatchUpdateMediaTagsDto,
@@ -215,6 +216,72 @@ export async function registerMediaRoutes(app: FastifyInstance) {
 
     const withSources = await prisma.mediaContent.findMany({ where: { id: { in: rows.map((row) => row.id) } }, include: { sources: true } });
     return { success: true, message: "ok", data: withSources.map(toMediaContentDto) };
+  });
+
+  app.post<{ Body: BatchMergeMediaContentsDto; Reply: ApiResp<MediaContentDto> }>("/api/media/merge", async (request, reply) => {
+    const ids = normalizeIds(request.body.ids);
+    if (ids.length < 2) return reply.code(400).send({ success: false, message: "至少选择 2 条内容才能合并" });
+
+    const merged = await prisma.$transaction(async (tx) => {
+      const contents = await tx.mediaContent.findMany({
+        where: { id: { in: ids } },
+        include: { sources: true },
+      });
+      const contentById = new Map(contents.map((content) => [content.id, content]));
+      const orderedContents = ids.map((id) => contentById.get(id));
+      if (orderedContents.some((content) => !content)) return undefined;
+
+      const elements = orderedContents.flatMap((content) => {
+        const value = content?.elements;
+        return Array.isArray(value) ? (value as unknown as MediaElement[]) : [];
+      });
+      if (elements.length === 0) return null;
+
+      const tags = Array.from(new Set(orderedContents.flatMap((content) => content?.tags ?? [])));
+      const sign = contentSign(elements);
+      const existing = await tx.mediaContent.findUnique({ where: { sign } });
+      const mergedTitle = `合并内容（${ids.length} 条）`;
+      const row = existing
+        ? await tx.mediaContent.update({
+            where: { id: existing.id },
+            data: {
+              title: existing.title ?? mergedTitle,
+              tags: Array.from(new Set([...existing.tags, ...tags])),
+              elements: elements as unknown as Prisma.InputJsonValue,
+              type: inferContentType(elements),
+              auditState: "approved",
+            },
+          })
+        : await tx.mediaContent.create({
+            data: {
+              id: nextSnowflakeId(),
+              type: inferContentType(elements),
+              title: mergedTitle,
+              tags,
+              elements: elements as unknown as Prisma.InputJsonValue,
+              sign,
+              auditState: "approved",
+            },
+          });
+
+      await tx.sourceBinding.updateMany({
+        where: { contentId: { in: ids } },
+        data: { contentId: row.id },
+      });
+
+      // 合并是内容级迁移，先清旧索引，再为目标内容重建 tag 索引。
+      await tx.contentTag.deleteMany({ where: { contentId: { in: ids } } });
+      const rowTags = Array.from(new Set([...(row.tags ?? []), ...tags]));
+      await syncContentTags(tx, row.id, rowTags);
+      await tx.mediaContent.deleteMany({ where: { id: { in: ids.filter((id) => id !== row.id) } } });
+      return row;
+    });
+
+    if (merged === undefined) return reply.code(404).send({ success: false, message: "选中的内容不存在或已被删除" });
+    if (merged === null) return reply.code(400).send({ success: false, message: "选中的内容没有可合并元素" });
+
+    const row = await prisma.mediaContent.findUnique({ where: { id: merged.id }, include: { sources: true } });
+    return { success: true, message: "ok", data: toMediaContentDto(row ?? merged) };
   });
 
   app.delete<{ Body: BatchDeleteMediaContentsDto; Reply: ApiResp<{ deleted: number }> }>("/api/media", async (request) => {

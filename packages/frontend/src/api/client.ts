@@ -6,6 +6,7 @@ import type {
   AuditState,
   BatchDeleteMediaAssetsDto,
   BatchDeleteMediaContentsDto,
+  BatchMergeMediaContentsDto,
   AuthSessionDto,
   BatchRestoreMediaContentsToWorkspaceDto,
   BatchRestoreMediaContentsToWorkspaceResultDto,
@@ -176,6 +177,13 @@ export function batchUpdateMediaTags(body: BatchUpdateMediaTagsDto) {
 export function deleteMediaContents(body: BatchDeleteMediaContentsDto) {
   return request<{ deleted: number }>("/api/media", {
     method: "DELETE",
+    body: JSON.stringify(body),
+  });
+}
+
+export function mergeMediaContents(body: BatchMergeMediaContentsDto) {
+  return request<MediaContentDto>("/api/media/merge", {
+    method: "POST",
     body: JSON.stringify(body),
   });
 }

@@ -113,6 +113,10 @@ export interface BatchRestoreMediaContentsToWorkspaceResultDto {
   moved: number;
 }
 
+export interface BatchMergeMediaContentsDto {
+  ids: string[];
+}
+
 export interface MediaFileDto {
   md5: string;
   storageKey: string;

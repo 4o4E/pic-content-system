@@ -14,7 +14,7 @@ import type {
   WorkspaceDraftDto,
 } from "@pic/shared";
 import type { LucideIcon } from "lucide-react";
-import { useEffect, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import {
   Archive,
   CheckCircle2,
@@ -22,7 +22,12 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  ChevronsDown,
+  ChevronsLeft,
+  ChevronsRight,
+  ChevronsUp,
   Clock3,
+  Combine,
   Database,
   FileAudio,
   FileText,
@@ -70,6 +75,7 @@ import {
   listTagAliases,
   listTags,
   loginWithToken,
+  mergeMediaContents,
   rejectAudit,
   restoreMediaContentsToWorkspace,
   resetAudit,
@@ -80,6 +86,7 @@ type PageKey = "home" | "workspace" | "library" | "audits" | "events" | "tags";
 type TagMode = "and" | "or";
 type ContentCardSize = "small" | "medium" | "large";
 type LibrarySort = "time_desc" | "time_asc";
+type LibraryPaginationPlacement = "top" | "side" | "bottom";
 type LibraryRouteState = {
   query: string;
   selectedTags: string[];
@@ -193,6 +200,15 @@ function collectImagePreviewItems(elements: MediaElement[]): ImagePreviewItem[] 
     }
     if (element.type === "speak") return collectImagePreviewItems(element.message);
     if (element.type === "discuss") return collectImagePreviewItems(element.content);
+    return [];
+  });
+}
+
+function collectImageElements(elements: MediaElement[]): Array<Extract<MediaElement, { type: "image" }>> {
+  return elements.flatMap((element) => {
+    if (element.type === "image") return [element];
+    if (element.type === "speak") return collectImageElements(element.message);
+    if (element.type === "discuss") return collectImageElements(element.content);
     return [];
   });
 }
@@ -846,9 +862,73 @@ function SingleContentPreview({ element, onOpen }: { element: MediaElement; onOp
   return <CompositeContentPreview elements={[element]} />;
 }
 
-function CompositeContentPreview({ elements, onOpen }: { elements: MediaElement[]; onOpen?: () => void }) {
+function CompositeContentPreview({
+  elements,
+  onOpen,
+  onOpenImage,
+}: {
+  elements: MediaElement[];
+  onOpen?: () => void;
+  onOpenImage?: (element: Extract<MediaElement, { type: "image" }>) => void;
+}) {
+  const imageElements = collectImageElements(elements);
+  const previewImages = imageElements.slice(0, 4);
+  const text = elements
+    .filter((element): element is Extract<MediaElement, { type: "text" }> => element.type === "text")
+    .map((element) => textPreview(element.content))
+    .join(" / ");
   const body = (
-    <div className="h-full overflow-hidden rounded-md border border-border bg-surface-muted p-3">
+    <div
+      className={cn(
+        "h-full overflow-hidden rounded-md border border-border bg-surface-muted p-3 text-left outline-none transition-colors",
+        onOpen && "cursor-pointer hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary",
+      )}
+      role={onOpen ? "button" : undefined}
+      tabIndex={onOpen ? 0 : undefined}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (!onOpen) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
+    >
+      {previewImages.length > 0 && (
+        <div className={cn("mb-2 grid h-[58%] min-h-24 gap-1 overflow-hidden", previewImages.length === 1 ? "grid-cols-1" : "grid-cols-2")}>
+          {previewImages.map((element, index) => {
+            const imageNode = (
+              <>
+                <img className="h-full w-full object-cover" src={fileUrl(element.id)} alt={`复合内容第 ${index + 1} 张图片`} loading="lazy" />
+                {index === previewImages.length - 1 && imageElements.length > previewImages.length && (
+                  <span className="absolute inset-0 flex items-center justify-center bg-black/55 text-sm font-semibold text-white">+{imageElements.length - previewImages.length}</span>
+                )}
+              </>
+            );
+            if (!onOpenImage) {
+              return (
+                <div key={`${element.id}-${index}`} className="relative min-h-0 overflow-hidden rounded-md border border-border bg-surface">
+                  {imageNode}
+                </div>
+              );
+            }
+            return (
+              <button
+                key={`${element.id}-${index}`}
+                className="relative min-h-0 overflow-hidden rounded-md border border-border bg-surface outline-none hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary"
+                type="button"
+                aria-label={`打开第 ${index + 1} 张图片预览`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onOpenImage(element);
+                }}
+              >
+                {imageNode}
+              </button>
+            );
+          })}
+        </div>
+      )}
       <div className="mb-2 flex max-h-14 flex-wrap gap-2 overflow-hidden">
         {elements.map((element, index) => (
           <Badge key={`${element.type}-${index}-${elementSummary(element)}`} className="border-primary/30 bg-primary-muted text-primary-text">
@@ -857,23 +937,11 @@ function CompositeContentPreview({ elements, onOpen }: { elements: MediaElement[
         ))}
       </div>
       <div className="overflow-hidden text-sm leading-6 text-muted-foreground">
-        {elements
-          .filter((element): element is Extract<MediaElement, { type: "text" }> => element.type === "text")
-          .map((element) => textPreview(element.content))
-          .join(" / ") || "复合内容中的媒体文件已用类型标记展示。"}
+        {text || (imageElements.length > 0 ? `${imageElements.length} 张图片，点击缩略图可预览。` : "复合内容中的媒体文件已用类型标记展示。")}
       </div>
     </div>
   );
-  if (!onOpen) return body;
-  return (
-    <button
-      className="block h-full w-full text-left outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary"
-      onClick={onOpen}
-      type="button"
-    >
-      {body}
-    </button>
-  );
+  return body;
 }
 
 function ContentPreview({
@@ -889,7 +957,7 @@ function ContentPreview({
     const [element] = content.elements;
     if (element) return <SingleContentPreview element={element} onOpen={onOpenElement} />;
   }
-  return <CompositeContentPreview elements={content.elements} onOpen={onOpenContent ? () => onOpenContent(content) : undefined} />;
+  return <CompositeContentPreview elements={content.elements} onOpen={onOpenContent ? () => onOpenContent(content) : undefined} onOpenImage={onOpenElement} />;
 }
 
 function Modal({
@@ -1337,7 +1405,13 @@ function WorkspacePage({
   );
 }
 
-function ContentLibraryPage({ onOpenImagePreview }: { onOpenImagePreview: (elements: MediaElement[], activeElement: MediaElement) => void }) {
+function ContentLibraryPage({
+  onOpenImagePreview,
+  onOpenWorkspace,
+}: {
+  onOpenImagePreview: (elements: MediaElement[], activeElement: MediaElement) => void;
+  onOpenWorkspace: () => void;
+}) {
   const initialRouteState = readLibraryStateFromUrl();
   const [query, setQuery] = useState(initialRouteState.query);
   const [selectedTags, setSelectedTags] = useState<string[]>(initialRouteState.selectedTags);
@@ -1354,16 +1428,23 @@ function ContentLibraryPage({ onOpenImagePreview }: { onOpenImagePreview: (eleme
   const [previewContent, setPreviewContent] = useState<MediaContentDto | null>(null);
   const [previewElement, setPreviewElement] = useState<MediaElement | null>(null);
   const [pendingDeleteConfirm, setPendingDeleteConfirm] = useState(false);
+  const [showSidePagination, setShowSidePagination] = useState(false);
+  const [showScrollTop, setShowScrollTop] = useState(false);
   const [batchAddTags, setBatchAddTags] = useState("");
   const [batchRemoveTags, setBatchRemoveTags] = useState("");
   const [total, setTotal] = useState(0);
   const [error, setError] = useState("");
+  const topPaginationRef = useRef<HTMLDivElement | null>(null);
+  const bottomPaginationRef = useRef<HTMLDivElement | null>(null);
+  const topPaginationVisibleRef = useRef(true);
+  const bottomPaginationVisibleRef = useRef(false);
   const cardMinWidth = contentCardSizeOptions.find((option) => option.value === cardSize)?.minWidth ?? "260px";
   const gridStyle: CSSProperties = {
     gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${cardMinWidth}), 1fr))`,
   };
   const commonTags = tags.slice(0, 10);
-  const selectedContents = contents.filter((content) => selectedContentIds.includes(content.id));
+  const contentById = new Map(contents.map((content) => [content.id, content]));
+  const selectedContents = selectedContentIds.map((id) => contentById.get(id)).filter((content): content is MediaContentDto => Boolean(content));
   const selectedContentTagCounts = selectedContents.reduce((counts, content) => {
     for (const tag of content.tags) counts.set(tag, (counts.get(tag) ?? 0) + 1);
     return counts;
@@ -1452,6 +1533,47 @@ function ContentLibraryPage({ onOpenImagePreview }: { onOpenImagePreview: (eleme
     setPendingDeleteConfirm(false);
   }, [selectedContentIds]);
 
+  useEffect(() => {
+    const scrollContainer = document.querySelector<HTMLElement>("[data-app-scroll-container]");
+    if (!scrollContainer) return;
+    const container = scrollContainer;
+    const topPagination = topPaginationRef.current;
+    const bottomPagination = bottomPaginationRef.current;
+    if (!topPagination || !bottomPagination) return;
+
+    function updateSidePagination() {
+      setShowSidePagination(!topPaginationVisibleRef.current && !bottomPaginationVisibleRef.current);
+    }
+
+    function updateScrollTopButton() {
+      setShowScrollTop(container.scrollTop > 80);
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.target === topPagination) topPaginationVisibleRef.current = entry.isIntersecting;
+          if (entry.target === bottomPagination) bottomPaginationVisibleRef.current = entry.isIntersecting;
+        }
+        updateSidePagination();
+      },
+      {
+        root: container,
+        threshold: 0.01,
+      },
+    );
+
+    observer.observe(topPagination);
+    observer.observe(bottomPagination);
+    updateScrollTopButton();
+    updateSidePagination();
+    container.addEventListener("scroll", updateScrollTopButton, { passive: true });
+    return () => {
+      observer.disconnect();
+      container.removeEventListener("scroll", updateScrollTopButton);
+    };
+  }, [contents.length, currentPage, pageSize]);
+
   function resetLibraryPage() {
     setCurrentPage(defaultLibraryPage);
   }
@@ -1463,6 +1585,18 @@ function ContentLibraryPage({ onOpenImagePreview }: { onOpenImagePreview: (eleme
 
   function changeSort(nextSort: LibrarySort) {
     setSort(nextSort);
+    setCurrentPage(defaultLibraryPage);
+  }
+
+  function scrollLibraryToTop() {
+    document.querySelector<HTMLElement>("[data-app-scroll-container]")?.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function submitLibrarySearch() {
+    if (currentPage === defaultLibraryPage) {
+      refreshContents().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载内容库失败"));
+      return;
+    }
     setCurrentPage(defaultLibraryPage);
   }
 
@@ -1519,8 +1653,21 @@ function ContentLibraryPage({ onOpenImagePreview }: { onOpenImagePreview: (eleme
       await restoreMediaContentsToWorkspace({ ids: selectedContentIds });
       setSelectedContentIds([]);
       setError("");
+      onOpenWorkspace();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "放回工作台失败");
+    }
+  }
+
+  async function mergeSelectedContents() {
+    if (selectedContentIds.length < 2) return;
+    try {
+      await mergeMediaContents({ ids: selectedContentIds });
+      setSelectedContentIds([]);
+      await refreshContents();
+      setTags(await listTags());
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "合并内容失败");
     }
   }
 
@@ -1544,9 +1691,95 @@ function ContentLibraryPage({ onOpenImagePreview }: { onOpenImagePreview: (eleme
     }
   }
 
+  function renderPagination(placement: LibraryPaginationPlacement) {
+    const vertical = placement === "side";
+    return (
+      <div
+        aria-label="内容库分页"
+        className={cn(
+          "border border-border bg-surface shadow-sm",
+          vertical
+            ? "hidden xl:fixed xl:right-4 xl:top-[4.75rem] xl:z-30 xl:flex xl:w-14 xl:flex-col xl:items-center xl:gap-2 xl:rounded-md xl:p-1"
+            : "flex flex-col gap-3 rounded-md p-3 sm:flex-row sm:items-center sm:justify-between",
+        )}
+      >
+        <div className={cn("flex flex-wrap items-center justify-center gap-1", vertical ? "flex-col" : "sm:justify-start")}>
+          <Button
+            className="h-8 w-8 px-0"
+            disabled={currentPage <= 1}
+            variant="secondary"
+            aria-label="首页"
+            onClick={() => setCurrentPage(1)}
+          >
+            {vertical ? <ChevronsUp className="h-4 w-4" /> : <ChevronsLeft className="h-4 w-4" />}
+          </Button>
+          <Button
+            className="h-8 w-8 px-0"
+            disabled={currentPage <= 1}
+            variant="secondary"
+            aria-label="上一页"
+            onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+          >
+            {vertical ? <ChevronUp className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+          </Button>
+          {visiblePages.map((page) => (
+            <Button
+              key={page}
+              className="h-8 w-8 px-0 text-xs"
+              variant={page === currentPage ? "primary" : "secondary"}
+              aria-label={`第 ${page} 页`}
+              onClick={() => setCurrentPage(page)}
+            >
+              {page}
+            </Button>
+          ))}
+          <Button
+            className="h-8 w-8 px-0"
+            disabled={currentPage >= totalPages}
+            variant="secondary"
+            aria-label="下一页"
+            onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+          >
+            {vertical ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+          </Button>
+          <Button
+            className="h-8 w-8 px-0"
+            disabled={currentPage >= totalPages}
+            variant="secondary"
+            aria-label="尾页"
+            onClick={() => setCurrentPage(totalPages)}
+          >
+            {vertical ? <ChevronsDown className="h-4 w-4" /> : <ChevronsRight className="h-4 w-4" />}
+          </Button>
+          {!vertical && (
+            <span className="ml-0 text-xs text-subtle-foreground sm:ml-2">
+              第 {currentPage} / {totalPages} 页
+            </span>
+          )}
+        </div>
+        <div className={cn("flex gap-2", vertical ? "flex-col items-center" : "flex-col sm:flex-row sm:items-center")}>
+          {!vertical && <span className="text-center text-xs text-muted-foreground sm:text-left">每页数量</span>}
+          <div className={cn("flex rounded-md border border-border bg-surface-muted p-1", vertical ? "flex-col" : "justify-center sm:justify-start")}>
+            {libraryPageSizeOptions.map((size) => (
+              <Button
+                key={size}
+                className={cn("h-8 text-xs", vertical ? "w-10 px-0" : "px-3")}
+                variant={pageSize === size ? "primary" : "ghost"}
+                aria-label={`每页 ${size} 条`}
+                onClick={() => changePageSize(size)}
+              >
+                {size}
+              </Button>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <section className="space-y-4 xl:pr-16">
-      <Card className="space-y-3 p-4">
+    <section className="space-y-4">
+      <Card className="space-y-3 p-4 xl:mx-20">
         <div className="flex flex-wrap items-center gap-3">
           <div className="relative min-w-[280px] flex-1">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-subtle-foreground" />
@@ -1558,8 +1791,15 @@ function ContentLibraryPage({ onOpenImagePreview }: { onOpenImagePreview: (eleme
                 setQuery(event.target.value);
                 resetLibraryPage();
               }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") submitLibrarySearch();
+              }}
             />
           </div>
+          <Button variant="primary" onClick={submitLibrarySearch}>
+            <Search className="h-4 w-4" />
+            搜索
+          </Button>
           <div className="flex rounded-md border border-border bg-surface p-1">
             <Button
               className="h-7 px-2"
@@ -1660,13 +1900,13 @@ function ContentLibraryPage({ onOpenImagePreview }: { onOpenImagePreview: (eleme
         <div className="text-xs text-subtle-foreground">当前条件匹配 {total} 条，本页展示 {contents.length} 条。</div>
       </Card>
       {selectedContentIds.length > 0 && (
-        <Card aria-label="已选内容操作" className="sticky top-[4.75rem] z-20 space-y-3 border-primary/30 bg-surface p-4 shadow-sm">
+        <Card aria-label="已选内容操作" className="sticky top-[4.75rem] z-20 space-y-3 border-primary/30 bg-surface p-4 shadow-sm xl:mx-20">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <div className="text-sm font-semibold">已选择 {selectedContentIds.length} 条内容</div>
-              <div className="mt-1 text-xs text-muted-foreground">批量添加或移除 tag，多个 tag 可用逗号、空格分隔。</div>
+              <div className="mt-1 text-xs text-muted-foreground">按选择顺序处理；批量 tag 可用逗号、空格分隔。</div>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button variant="secondary" onClick={() => setSelectedContentIds(contents.map((content) => content.id))}>
                 选择本页
               </Button>
@@ -1676,6 +1916,10 @@ function ContentLibraryPage({ onOpenImagePreview }: { onOpenImagePreview: (eleme
               <Button variant="secondary" onClick={() => void restoreSelectedToWorkspace()}>
                 <FolderInput className="h-4 w-4" />
                 放回工作台
+              </Button>
+              <Button variant="secondary" disabled={selectedContentIds.length < 2} onClick={() => void mergeSelectedContents()}>
+                <Combine className="h-4 w-4" />
+                合并
               </Button>
               <Button variant={pendingDeleteConfirm ? "danger" : "secondary"} onClick={() => void submitBatchDelete()}>
                 <Trash2 className="h-4 w-4" />
@@ -1713,64 +1957,19 @@ function ContentLibraryPage({ onOpenImagePreview }: { onOpenImagePreview: (eleme
           </div>
         </Card>
       )}
-      {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
-      <div aria-label="内容库分页" className="flex justify-center xl:fixed xl:right-4 xl:top-[4.75rem] xl:z-10 xl:block xl:w-14">
-        <div className="flex flex-wrap items-center justify-center gap-1 rounded-md border border-border bg-surface p-1 shadow-sm xl:flex-col">
-          <Button
-            className="h-8 w-8 px-0"
-            disabled={currentPage <= 1}
-            variant="secondary"
-            aria-label="上一页"
-            onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
-          >
-            <ChevronUp className="h-4 w-4 hidden xl:block" />
-            <ChevronLeft className="h-4 w-4 xl:hidden" />
-          </Button>
-          {visiblePages.map((page) => (
-            <Button
-              key={page}
-              className="h-8 w-8 px-0 text-xs"
-              variant={page === currentPage ? "primary" : "secondary"}
-              aria-label={`第 ${page} 页`}
-              onClick={() => setCurrentPage(page)}
-            >
-              {page}
-            </Button>
-          ))}
-          <Button
-            className="h-8 w-8 px-0"
-            disabled={currentPage >= totalPages}
-            variant="secondary"
-            aria-label="下一页"
-            onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
-          >
-            <ChevronDown className="h-4 w-4 hidden xl:block" />
-            <ChevronRight className="h-4 w-4 xl:hidden" />
-          </Button>
-          <div className="relative h-8 w-12">
-            <select
-              className="h-8 w-12 appearance-none rounded-md border border-border bg-surface pl-2 pr-5 text-xs text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-              title="每页数量"
-              value={pageSize}
-              onChange={(event) => changePageSize(Number(event.target.value))}
-            >
-              {libraryPageSizeOptions.map((size) => (
-                <option key={size} value={size}>
-                  {size}
-                </option>
-              ))}
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-subtle-foreground" />
-          </div>
-        </div>
-      </div>
-      <div className="grid gap-3" style={gridStyle}>
-        {contents.map((content) => (
+      {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400 xl:mx-20">{error}</Card>}
+      <div ref={topPaginationRef} className="xl:mx-20">{renderPagination("top")}</div>
+      {showSidePagination && renderPagination("side")}
+      <div className="grid gap-3 xl:px-20" style={gridStyle}>
+        {contents.map((content) => {
+          const selectedOrder = selectedContentIds.indexOf(content.id) + 1;
+          const selected = selectedOrder > 0;
+          return (
           <Card
             key={content.id}
             className={cn(
               "flex aspect-square min-h-0 flex-col overflow-hidden p-3",
-              selectedContentIds.includes(content.id) && "border-primary bg-primary-muted/40",
+              selected && "border-primary bg-primary-muted/40",
             )}
           >
             <div className="flex shrink-0 items-start justify-between gap-3">
@@ -1782,14 +1981,14 @@ function ContentLibraryPage({ onOpenImagePreview }: { onOpenImagePreview: (eleme
               <div className="flex shrink-0 items-center gap-2">
                 <button
                   className={cn(
-                    "flex h-7 w-7 items-center justify-center rounded-md border border-border bg-surface text-subtle-foreground transition-colors hover:border-primary/40 hover:text-primary-text",
-                    selectedContentIds.includes(content.id) && "border-primary/40 bg-primary text-[#062426]",
+                    "flex h-7 min-w-7 items-center justify-center rounded-md border border-border bg-surface px-1 text-xs font-semibold text-subtle-foreground transition-colors hover:border-primary/40 hover:text-primary-text",
+                    selected && "border-primary/40 bg-primary text-[#062426]",
                   )}
                   onClick={() => toggleContentSelection(content.id)}
                   type="button"
-                  aria-label={selectedContentIds.includes(content.id) ? "取消选择内容" : "选择内容"}
+                  aria-label={selected ? `取消选择第 ${selectedOrder} 个内容` : "选择内容"}
                 >
-                  <CheckCircle2 className="h-4 w-4" />
+                  {selected ? selectedOrder : <CheckCircle2 className="h-4 w-4" />}
                 </button>
               </div>
             </div>
@@ -1804,9 +2003,16 @@ function ContentLibraryPage({ onOpenImagePreview }: { onOpenImagePreview: (eleme
               <ContentPreview content={content} onOpenContent={setPreviewContent} onOpenElement={(element) => openElementPreview(element, content.elements)} />
             </div>
           </Card>
-        ))}
+          );
+        })}
       </div>
-      {contents.length === 0 && <Card className="p-8 text-center text-sm text-muted-foreground">没有符合当前 tag 条件的内容。</Card>}
+      {contents.length === 0 && <Card className="p-8 text-center text-sm text-muted-foreground xl:mx-20">没有符合当前 tag 条件的内容。</Card>}
+      <div ref={bottomPaginationRef} className="xl:mx-20">{renderPagination("bottom")}</div>
+      {showScrollTop && (
+        <Button className="fixed bottom-4 right-4 z-30 h-10 w-10 px-0 shadow-lg" variant="secondary" aria-label="滚动到顶部" onClick={scrollLibraryToTop}>
+          <ChevronUp className="h-5 w-5" />
+        </Button>
+      )}
       {previewContent && <ContentDetailModal content={previewContent} onClose={() => setPreviewContent(null)} onOpenElement={(element) => openElementPreview(element, previewContent.elements)} />}
       {previewElement && <MediaElementModal element={previewElement} onClose={() => setPreviewElement(null)} />}
     </section>
@@ -2369,8 +2575,9 @@ export default function App() {
 
   useEffect(() => {
     if (!token) return;
+    if (page !== "workspace") return;
     void refreshAssets();
-  }, [filters, token]);
+  }, [filters, page, token]);
 
   function changeTheme(nextTheme: ThemeMode) {
     setTheme(nextTheme);
@@ -2583,7 +2790,7 @@ export default function App() {
     <div className="h-full bg-background text-foreground">
       <Sidebar page={page} onPageChange={changePage} />
       <TopBar page={page} theme={theme} onThemeChange={changeTheme} onLogout={handleLogout} />
-      <div className="fixed inset-x-0 bottom-0 top-14 overflow-y-auto lg:left-60">
+      <div className="fixed inset-x-0 bottom-0 top-14 overflow-y-auto lg:left-60" data-app-scroll-container>
         <main className="flex min-h-full flex-col gap-4 px-4 py-4 lg:px-6 lg:pb-6">
           {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
           {page === "home" && <HomePage stats={stats} contents={contents} events={events} />}
@@ -2608,7 +2815,7 @@ export default function App() {
               onToggleAsset={toggleAsset}
             />
           )}
-          {page === "library" && <ContentLibraryPage onOpenImagePreview={openImagePreview} />}
+          {page === "library" && <ContentLibraryPage onOpenImagePreview={openImagePreview} onOpenWorkspace={() => changePage("workspace")} />}
           {page === "audits" && <AuditsPage onOpenImagePreview={openImagePreview} />}
           {page === "events" && <EventsPage />}
           {page === "tags" && <TagManagementPage />}

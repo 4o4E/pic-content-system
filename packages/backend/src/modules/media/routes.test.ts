@@ -7,6 +7,8 @@ const mockPrisma = vi.hoisted(() => ({
   },
   mediaContent: {
     count: vi.fn(),
+    create: vi.fn(),
+    deleteMany: vi.fn(),
     findMany: vi.fn(),
     findUnique: vi.fn(),
     update: vi.fn(),
@@ -145,5 +147,52 @@ describe("media routes", () => {
     await app.close();
 
     expect(response.json()).toMatchObject({ success: true, data: { tags: ["保留", "新tag"] } });
+  });
+
+  it("按请求顺序合并内容并删除原内容", async () => {
+    const imageA = { type: "image", id: "a".repeat(32), format: "png", file: false, width: 1, height: 1 };
+    const imageB = { type: "image", id: "b".repeat(32), format: "png", file: false, width: 1, height: 1 };
+    const rowA = contentRow({ id: "content-a", tags: ["A"], elements: [imageA], sign: "1".repeat(32) });
+    const rowB = contentRow({ id: "content-b", tags: ["B"], elements: [imageB], sign: "2".repeat(32) });
+    const merged = contentRow({
+      id: "content-merged",
+      type: "composite",
+      title: "合并内容（2 条）",
+      tags: ["B", "A"],
+      elements: [imageB, imageA],
+      sign: "3".repeat(32),
+    });
+    const tx = {
+      mediaContent: {
+        findMany: vi.fn().mockResolvedValue([rowA, rowB]),
+        findUnique: vi.fn().mockResolvedValue(undefined),
+        create: vi.fn().mockResolvedValue(merged),
+        deleteMany: vi.fn().mockResolvedValue({ count: 2 }),
+      },
+      sourceBinding: {
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      contentTag: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 2 }),
+        createMany: vi.fn().mockResolvedValue({ count: 2 }),
+      },
+    };
+    mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
+    mockPrisma.mediaContent.findUnique.mockResolvedValue(merged);
+    const app = await createMediaApp();
+
+    const response = await app.inject({ method: "POST", url: "/api/media/merge", payload: { ids: ["content-b", "content-a"] } });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ success: true, data: { id: "content-merged", type: "composite", tags: ["B", "A"] } });
+    expect(tx.mediaContent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        type: "composite",
+        tags: ["B", "A"],
+        elements: [imageB, imageA],
+      }),
+    });
+    expect(tx.mediaContent.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ["content-b", "content-a"] } } });
   });
 });

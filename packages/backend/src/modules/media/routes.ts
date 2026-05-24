@@ -120,12 +120,13 @@ export async function registerMediaRoutes(app: FastifyInstance) {
     return { success: true, message: "ok", data: toMediaContentDto(content) };
   });
 
-  app.post<{ Body: CreateMediaContentDto; Reply: ApiResp<MediaContentDto> }>("/api/media", async (request) => {
+  app.post<{ Body: CreateMediaContentDto; Reply: ApiResp<MediaContentDto> }>("/api/media", async (request, reply) => {
     const elements = request.body.elements ?? [];
     const assetIds = request.body.assetIds ?? [];
     const sign = contentSign(elements);
+    const tags = await resolveTagAliases(prisma, request.body.tags);
+    if (tags.length === 0) return reply.code(400).send({ success: false, message: "请至少添加一个 tag 后再提交" });
     const content = await prisma.$transaction(async (tx) => {
-      const tags = await resolveTagAliases(tx, request.body.tags);
       const row = await tx.mediaContent.upsert({
         where: { sign },
         create: {

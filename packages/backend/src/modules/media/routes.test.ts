@@ -102,6 +102,24 @@ describe("media routes", () => {
     expect(response.json()).toMatchObject({ success: true, data: [{ id: "content-id" }] });
   });
 
+  it("创建正式内容时必须至少包含一个 tag", async () => {
+    const app = await createMediaApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/media",
+      payload: {
+        tags: [],
+        elements: [{ type: "text", content: "测试内容" }],
+      },
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ success: false, message: "请至少添加一个 tag 后再提交" });
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
   it("PUT tags 替换完整 tag 集合", async () => {
     const tx = {
       tagAlias: { findMany: vi.fn().mockResolvedValue([{ alias: "dt", tag: "弔图" }]) },

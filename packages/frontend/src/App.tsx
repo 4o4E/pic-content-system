@@ -51,7 +51,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { createImagePreviewState, emptyImagePreviewState, ImagePreviewViewer, type ImagePreviewItem } from "@/components/media/image-preview";
+import { createImagePreviewState, emptyImagePreviewState, ImagePreviewViewer, type ImagePreviewGroup, type ImagePreviewItem } from "@/components/media/image-preview";
 import { cn } from "@/lib/utils";
 import {
   approveAudit,
@@ -87,6 +87,7 @@ type TagMode = "and" | "or";
 type ContentCardSize = "small" | "medium" | "large";
 type LibrarySort = "time_desc" | "time_asc";
 type LibraryPaginationPlacement = "top" | "side" | "bottom";
+type ImagePreviewOpener = (elements: MediaElement[], activeElement: MediaElement, groups?: ImagePreviewGroup[], groupIndex?: number) => void;
 type LibraryRouteState = {
   query: string;
   selectedTags: string[];
@@ -166,7 +167,7 @@ const pagePaths: Record<PageKey, string> = {
 
 const defaultMediaFilters: MediaFilters = {
   query: "",
-  status: "all",
+  status: "pending",
   kind: "all",
 };
 
@@ -202,6 +203,15 @@ function collectImagePreviewItems(elements: MediaElement[]): ImagePreviewItem[] 
     if (element.type === "discuss") return collectImagePreviewItems(element.content);
     return [];
   });
+}
+
+function collectContentImagePreviewGroups(contents: MediaContentDto[]): ImagePreviewGroup[] {
+  return contents
+    .map((content, index) => ({
+      label: content.title ?? `第 ${index + 1} 条记录`,
+      images: collectImagePreviewItems(content.elements),
+    }))
+    .filter((group) => group.images.length > 0);
 }
 
 function collectImageElements(elements: MediaElement[]): Array<Extract<MediaElement, { type: "image" }>> {
@@ -1089,12 +1099,14 @@ function MaterialCard({
   index,
   checked,
   onToggle,
+  onAddToDraft,
   onOpenImage,
 }: {
   asset: MediaAssetDto;
   index: number;
   checked: boolean;
   onToggle: (id: string) => void;
+  onAddToDraft: (id: string) => void;
   onOpenImage: (element: MediaElement) => void;
 }) {
   const selectable = asset.status !== "used" && asset.status !== "ignored";
@@ -1116,17 +1128,26 @@ function MaterialCard({
         asset.status === "used" && "opacity-70",
       )}
     >
-      <button className="block w-full text-left" disabled={!selectable} onClick={() => onToggle(asset.id)}>
-        <div className="relative aspect-square bg-surface-muted">
+      <div className="relative aspect-square bg-surface-muted">
+        <button className="block h-full w-full text-left" disabled={!selectable} type="button" title="双击加入结果" onDoubleClick={() => onAddToDraft(asset.id)}>
           <AssetPreview element={asset.element} />
           <div className="absolute left-2 top-2 rounded-full bg-surface/90 px-2 py-0.5 font-mono text-xs text-subtle-foreground">
             #{index + 1}
           </div>
-          <div className="absolute right-2 top-2">
-            <input className="h-4 w-4 accent-[var(--primary)]" checked={checked} disabled={!selectable} readOnly type="checkbox" />
-          </div>
-        </div>
-      </button>
+        </button>
+        <button
+          className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-md bg-surface/90"
+          disabled={!selectable}
+          type="button"
+          aria-label={checked ? "取消选择素材" : "选择素材"}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggle(asset.id);
+          }}
+        >
+          <input className="h-4 w-4 accent-[var(--primary)]" checked={checked} disabled={!selectable} readOnly type="checkbox" />
+        </button>
+      </div>
       <div className="space-y-2 p-3">
         <div className="flex items-center justify-between gap-2">
           <span className="text-sm font-medium text-foreground">{elementLabel(asset.element)}素材</span>
@@ -1134,6 +1155,15 @@ function MaterialCard({
         </div>
         <div className="flex items-center gap-2">
           <p className="min-w-0 flex-1 truncate font-mono text-xs text-subtle-foreground">{asset.fileMd5 ?? asset.id}</p>
+          <Button
+            className="h-7 w-7 px-0"
+            disabled={!selectable}
+            variant="ghost"
+            aria-label="加入结果"
+            onClick={() => onAddToDraft(asset.id)}
+          >
+            <Plus className="h-4 w-4" />
+          </Button>
           <Button
             className="h-7 w-7 px-0"
             disabled={asset.element.type !== "image"}
@@ -1155,6 +1185,7 @@ function AssemblyItem({
   count,
   onMove,
   onRemove,
+  onUpdateText,
   onOpenImage,
   onDragStart,
   onDrop,
@@ -1164,6 +1195,7 @@ function AssemblyItem({
   count: number;
   onMove: (from: number, to: number) => void;
   onRemove: (index: number) => void;
+  onUpdateText: (index: number, content: string) => void;
   onOpenImage: (element: MediaElement) => void;
   onDragStart: (index: number) => void;
   onDrop: (index: number) => void;
@@ -1199,7 +1231,16 @@ function AssemblyItem({
           </Button>
         </div>
       </div>
-      <DraftElementPreview element={element} onOpenImage={onOpenImage} />
+      {element.type === "text" ? (
+        <textarea
+          className="min-h-24 w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-sm leading-6 text-foreground outline-none transition-colors placeholder:text-subtle-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
+          placeholder="输入文本内容"
+          value={element.content}
+          onChange={(event) => onUpdateText(index, event.target.value)}
+        />
+      ) : (
+        <DraftElementPreview element={element} onOpenImage={onOpenImage} />
+      )}
     </div>
   );
 }
@@ -1212,13 +1253,14 @@ function WorkspacePage({
   pendingDeleteConfirm,
   onFiltersChange,
   onToggleAsset,
-  onAddSelected,
   onIgnoreSelected,
   onDeleteSelected,
+  onClearSelected,
   onAddAssetByDrag,
   onAddTextElement,
   onDraftChange,
   onMoveElement,
+  onUpdateTextElement,
   onRemoveElement,
   onOpenImagePreview,
   onSubmit,
@@ -1230,19 +1272,20 @@ function WorkspacePage({
   pendingDeleteConfirm: boolean;
   onFiltersChange: (filters: MediaFilters) => void;
   onToggleAsset: (id: string) => void;
-  onAddSelected: () => void;
   onIgnoreSelected: () => void;
   onDeleteSelected: () => void;
+  onClearSelected: () => void;
   onAddAssetByDrag: (id: string) => void;
   onAddTextElement: (content: string) => void;
   onDraftChange: (draft: Pick<WorkspaceDraftDto, "title" | "tags">) => void;
   onMoveElement: (from: number, to: number) => void;
+  onUpdateTextElement: (index: number, content: string) => void;
   onRemoveElement: (index: number) => void;
-  onOpenImagePreview: (elements: MediaElement[], activeElement: MediaElement) => void;
+  onOpenImagePreview: ImagePreviewOpener;
   onSubmit: () => void;
 }) {
   const [draggedElementIndex, setDraggedElementIndex] = useState<number | null>(null);
-  const [manualText, setManualText] = useState("");
+  const canSubmitDraft = draft.elements.length > 0 && draft.tags.some((tag) => tag.trim());
 
   function handleDropAsset(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -1254,13 +1297,6 @@ function WorkspacePage({
     if (draggedElementIndex == null) return;
     onMoveElement(draggedElementIndex, to);
     setDraggedElementIndex(null);
-  }
-
-  function submitManualText() {
-    const content = manualText.trim();
-    if (!content) return;
-    onAddTextElement(content);
-    setManualText("");
   }
 
   return (
@@ -1278,10 +1314,6 @@ function WorkspacePage({
           <Trash2 className="h-4 w-4" />
           {pendingDeleteConfirm ? "确认删除" : "删除已选"}
         </Button>
-        <Button disabled={selectedIds.length === 0} variant="primary" onClick={onAddSelected}>
-          <Plus className="h-4 w-4" />
-          加入结果
-        </Button>
       </div>
 
       <div className="grid min-h-[640px] gap-4 xl:grid-cols-[minmax(420px,0.9fr)_minmax(520px,1.1fr)]">
@@ -1294,7 +1326,7 @@ function WorkspacePage({
             <Badge className="border-primary/40 bg-primary-muted text-primary-text">{draft.elements.length} 个元素</Badge>
           </div>
 
-          <div className="mb-4 grid gap-3 md:grid-cols-2">
+          <div className="mb-4 grid items-end gap-3 md:grid-cols-[minmax(160px,1fr)_minmax(220px,1fr)_auto]">
             <label className="block">
               <span className="mb-1 block text-xs font-medium text-muted-foreground">标题</span>
               <input
@@ -1309,24 +1341,20 @@ function WorkspacePage({
               placeholder="输入 tag 名称筛选或新建"
               onChange={(tags) => onDraftChange({ title: draft.title, tags })}
             />
+            <Button className="h-9" disabled={!canSubmitDraft} variant="primary" onClick={onSubmit}>
+              提交
+            </Button>
           </div>
 
-          <div className="mb-4 rounded-md border border-border bg-surface-muted p-3">
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium text-muted-foreground">手动文本块</span>
-              <textarea
-                className="min-h-24 w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-sm leading-6 text-foreground outline-none transition-colors placeholder:text-subtle-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
-                placeholder="输入需要加入草稿的文本"
-                value={manualText}
-                onChange={(event) => setManualText(event.target.value)}
-              />
-            </label>
-            <div className="mt-2 flex justify-end">
-              <Button disabled={!manualText.trim()} variant="secondary" onClick={submitManualText}>
-                <Plus className="h-4 w-4" />
-                添加文本块
-              </Button>
-            </div>
+          <div className="mb-4 flex flex-wrap justify-end gap-2 rounded-md border border-border bg-surface-muted p-3">
+            <Button disabled={selectedIds.length === 0} variant="secondary" onClick={onClearSelected}>
+              <X className="h-4 w-4" />
+              清空选择
+            </Button>
+            <Button variant="secondary" onClick={() => onAddTextElement("")}>
+              <Plus className="h-4 w-4" />
+              添加文本块
+            </Button>
           </div>
 
           <div
@@ -1336,7 +1364,7 @@ function WorkspacePage({
           >
             {draft.elements.map((element, index) => (
               <AssemblyItem
-                key={`${element.type}-${index}-${elementSummary(element)}`}
+                key={`${element.type}-${index}`}
                 count={draft.elements.length}
                 element={element}
                 index={index}
@@ -1344,22 +1372,15 @@ function WorkspacePage({
                 onDrop={handleDropElement}
                 onMove={onMoveElement}
                 onRemove={onRemoveElement}
+                onUpdateText={onUpdateTextElement}
                 onOpenImage={(element) => onOpenImagePreview(draft.elements, element)}
               />
             ))}
             {draft.elements.length === 0 && (
               <div className="flex h-full min-h-[240px] items-center justify-center rounded-md border border-dashed border-border bg-surface text-center text-sm text-muted-foreground">
-                从右侧拖入素材，或勾选素材后点击“加入结果”。
+                从右侧拖入素材，或点击素材卡片上的“加入结果”。
               </div>
             )}
-          </div>
-
-          <div className="mt-4 flex items-center justify-between gap-3">
-            <div className="text-xs text-subtle-foreground">提交后会生成正式内容，素材状态变为已入库。</div>
-            <Button disabled={draft.elements.length === 0} variant="primary" onClick={onSubmit}>
-              <CheckCircle2 className="h-4 w-4" />
-              提交正式内容
-            </Button>
           </div>
         </Card>
 
@@ -1393,6 +1414,7 @@ function WorkspacePage({
                   checked={selectedIds.includes(asset.id)}
                   index={index}
                   onOpenImage={(element) => onOpenImagePreview(assets.map((item) => item.element), element)}
+                  onAddToDraft={onAddAssetByDrag}
                   onToggle={onToggleAsset}
                 />
               ))}
@@ -1409,7 +1431,7 @@ function ContentLibraryPage({
   onOpenImagePreview,
   onOpenWorkspace,
 }: {
-  onOpenImagePreview: (elements: MediaElement[], activeElement: MediaElement) => void;
+  onOpenImagePreview: ImagePreviewOpener;
   onOpenWorkspace: () => void;
 }) {
   const initialRouteState = readLibraryStateFromUrl();
@@ -1623,7 +1645,13 @@ function ContentLibraryPage({
 
   function openElementPreview(element: MediaElement, elements: MediaElement[]) {
     if (element.type === "image") {
-      onOpenImagePreview(elements, element);
+      const groups = collectContentImagePreviewGroups(contents);
+      const activeSrc = imagePreviewSrc(element);
+      const groupIndex = Math.max(
+        0,
+        groups.findIndex((group) => group.images.some((image) => image.src === activeSrc)),
+      );
+      onOpenImagePreview(elements, element, groups, groupIndex);
       return;
     }
     setPreviewElement(element);
@@ -2082,7 +2110,7 @@ function AuditLogModal({ detail, onClose }: { detail: AuditDetailDto; onClose: (
   );
 }
 
-function AuditsPage({ onOpenImagePreview }: { onOpenImagePreview: (elements: MediaElement[], activeElement: MediaElement) => void }) {
+function AuditsPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePreviewOpener }) {
   const [state, setState] = useState<AuditState | "all">("pending");
   const [type, setType] = useState<MediaType | "all">("all");
   const [items, setItems] = useState<AuditListItemDto[]>([]);
@@ -2106,7 +2134,13 @@ function AuditsPage({ onOpenImagePreview }: { onOpenImagePreview: (elements: Med
 
   function openElementPreview(element: MediaElement, elements: MediaElement[]) {
     if (element.type === "image") {
-      onOpenImagePreview(elements, element);
+      const groups = collectContentImagePreviewGroups(items);
+      const activeSrc = imagePreviewSrc(element);
+      const groupIndex = Math.max(
+        0,
+        groups.findIndex((group) => group.images.some((image) => image.src === activeSrc)),
+      );
+      onOpenImagePreview(elements, element, groups, groupIndex);
       return;
     }
     setPreviewElement(element);
@@ -2648,8 +2682,7 @@ export default function App() {
     setSelectedIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   }
 
-  function addSelectedToDraft() {
-    addAssetsToDraft(selectedIds);
+  function clearSelectedAssets() {
     setSelectedIds([]);
     setPendingAssetDeleteConfirm(false);
   }
@@ -2658,14 +2691,14 @@ export default function App() {
     addAssetsToDraft([id]);
   }
 
-  function openImagePreview(elements: MediaElement[], activeElement: MediaElement) {
-    const images = collectImagePreviewItems(elements);
+  function openImagePreview(elements: MediaElement[], activeElement: MediaElement, groups: ImagePreviewGroup[] = [], groupIndex = 0) {
+    const images = groups[groupIndex]?.images.length ? groups[groupIndex].images : collectImagePreviewItems(elements);
     const activeSrc = imagePreviewSrc(activeElement);
     const activeIndex = Math.max(
       0,
       images.findIndex((image) => image.src === activeSrc),
     );
-    setImagePreview(createImagePreviewState(images.length > 0 ? images : collectImagePreviewItems([activeElement]), activeIndex));
+    setImagePreview(createImagePreviewState(images.length > 0 ? images : collectImagePreviewItems([activeElement]), activeIndex, groups, groupIndex));
   }
 
   function addAssetsToDraft(assetIds: string[]) {
@@ -2682,15 +2715,24 @@ export default function App() {
   }
 
   function addTextElementToDraft(content: string) {
-    const text = content.trim();
-    if (!text) return;
     setDraft((current) => ({
       ...current,
       // 手动文本块没有素材来源，用空字符串占位保持 elements 和 assetIds 顺序对齐。
       assetIds: [...alignDraftAssetIds(current.elements, current.assetIds), ""],
-      elements: [...current.elements, { type: "text", content: text }],
+      elements: [...current.elements, { type: "text", content }],
       updatedAt: now(),
     }));
+  }
+
+  function updateDraftTextElement(index: number, content: string) {
+    setDraft((current) => {
+      if (index < 0 || index >= current.elements.length) return current;
+      const element = current.elements[index];
+      if (element?.type !== "text") return current;
+      const elements = [...current.elements];
+      elements[index] = { ...element, content };
+      return { ...current, elements, updatedAt: now() };
+    });
   }
 
   async function ignoreSelected() {
@@ -2767,6 +2809,10 @@ export default function App() {
 
   async function submitCurrentDraft() {
     if (draft.elements.length === 0) return;
+    if (!draft.tags.some((tag) => tag.trim())) {
+      setError("请至少添加一个 tag 后再提交");
+      return;
+    }
     try {
       await createMedia({
         title: draft.title?.trim() || undefined,
@@ -2802,8 +2848,8 @@ export default function App() {
               pendingDeleteConfirm={pendingAssetDeleteConfirm}
               selectedIds={selectedIds}
               onAddAssetByDrag={addAssetByDrag}
-              onAddSelected={addSelectedToDraft}
               onAddTextElement={addTextElementToDraft}
+              onClearSelected={clearSelectedAssets}
               onDeleteSelected={() => void deleteSelectedAssets()}
               onDraftChange={updateDraftMeta}
               onFiltersChange={setFilters}
@@ -2811,6 +2857,7 @@ export default function App() {
               onMoveElement={moveDraftElement}
               onOpenImagePreview={openImagePreview}
               onRemoveElement={removeDraftElement}
+              onUpdateTextElement={updateDraftTextElement}
               onSubmit={() => void submitCurrentDraft()}
               onToggleAsset={toggleAsset}
             />

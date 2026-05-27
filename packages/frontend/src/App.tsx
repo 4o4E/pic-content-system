@@ -8,6 +8,7 @@ import type {
   MediaContentDto,
   MediaElement,
   MediaType,
+  PicContentItemDto,
   SourceProfileDto,
   TagAliasDto,
   TagDto,
@@ -33,6 +34,8 @@ import {
   FileText,
   FileVideo,
   FolderInput,
+  Flame,
+  Heart,
   Image,
   LayoutDashboard,
   Layers3,
@@ -72,8 +75,11 @@ import {
   listAudits,
   listIngestEvents,
   listMedia,
+  listPicHot,
+  listPicLatest,
   listTagAliases,
   listTags,
+  likePicContent,
   loginWithToken,
   mergeMediaContents,
   rejectAudit,
@@ -82,10 +88,12 @@ import {
 } from "@/api/client";
 
 type ThemeMode = "light" | "dark";
-type PageKey = "home" | "workspace" | "library" | "audits" | "events" | "tags";
+type PageKey = "home" | "workspace" | "library" | "pic" | "audits" | "events" | "tags";
 type TagMode = "and" | "or";
 type ContentCardSize = "small" | "medium" | "large";
-type LibrarySort = "time_desc" | "time_asc";
+type LibrarySort = "time_desc" | "time_asc" | "like_desc" | "like_asc";
+type PicPreviewMode = "latest" | "hot";
+type PicViewMode = "display" | "raw";
 type LibraryPaginationPlacement = "top" | "side" | "bottom";
 type ImagePreviewOpener = (elements: MediaElement[], activeElement: MediaElement, groups?: ImagePreviewGroup[], groupIndex?: number) => void;
 type LibraryRouteState = {
@@ -109,6 +117,7 @@ const pageItems: Array<{ key: PageKey; label: string; icon: LucideIcon }> = [
   { key: "home", label: "主页", icon: LayoutDashboard },
   { key: "workspace", label: "工作台", icon: Layers3 },
   { key: "library", label: "内容库", icon: Database },
+  { key: "pic", label: "取图接口", icon: Flame },
   { key: "audits", label: "审批管理", icon: CheckCircle2 },
   { key: "events", label: "接入事件", icon: ListChecks },
   { key: "tags", label: "标签管理", icon: Tags },
@@ -149,6 +158,8 @@ const contentCardSizeOptions: Array<{ label: string; value: ContentCardSize; min
 const librarySortOptions: Array<{ label: string; value: LibrarySort }> = [
   { label: "入库时间倒序", value: "time_desc" },
   { label: "入库时间正序", value: "time_asc" },
+  { label: "点赞数倒序", value: "like_desc" },
+  { label: "点赞数正序", value: "like_asc" },
 ];
 
 const defaultLibraryPage = 1;
@@ -160,6 +171,7 @@ const pagePaths: Record<PageKey, string> = {
   home: "/",
   workspace: "/workspace",
   library: "/library",
+  pic: "/pic",
   audits: "/audits",
   events: "/events",
   tags: "/tags",
@@ -1050,6 +1062,10 @@ function ContentDetailModal({
   return (
     <Modal title={content.title ?? "复合内容"} subtitle={content.sign} closeLabel="关闭详情" zIndex="z-40" onClose={onClose}>
         <div className="max-h-[calc(92vh-3rem)] overflow-y-auto p-4">
+          <div className="mb-3 inline-flex items-center gap-1 rounded-md border border-border bg-surface-muted px-2 py-1 text-xs text-muted-foreground">
+            <Heart className="h-3.5 w-3.5" />
+            点赞 {content.likeCount}
+          </div>
           <div className="mb-4 flex flex-wrap gap-1">
             {content.tags.map((tag) => (
               <Badge key={tag} className="border-primary/30 bg-primary-muted text-primary-text">
@@ -1449,6 +1465,7 @@ function ContentLibraryPage({
   const [selectedContentIds, setSelectedContentIds] = useState<string[]>([]);
   const [previewContent, setPreviewContent] = useState<MediaContentDto | null>(null);
   const [previewElement, setPreviewElement] = useState<MediaElement | null>(null);
+  const [busyLikeId, setBusyLikeId] = useState("");
   const [pendingDeleteConfirm, setPendingDeleteConfirm] = useState(false);
   const [showSidePagination, setShowSidePagination] = useState(false);
   const [showScrollTop, setShowScrollTop] = useState(false);
@@ -1505,6 +1522,24 @@ function ContentLibraryPage({
       return current.filter((id) => visibleIds.has(id));
     });
     setError("");
+  }
+
+  function updateContentLikeCount(contentId: string, likeCount: number) {
+    setContents((current) => current.map((content) => (content.id === contentId ? { ...content, likeCount } : content)));
+    setPreviewContent((current) => (current?.id === contentId ? { ...current, likeCount } : current));
+  }
+
+  async function submitLike(contentId: string) {
+    setBusyLikeId(contentId);
+    try {
+      const result = await likePicContent(contentId);
+      updateContentLikeCount(contentId, result.likeCount);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "点赞失败");
+    } finally {
+      setBusyLikeId("");
+    }
   }
 
   useEffect(() => {
@@ -2005,8 +2040,22 @@ function ContentLibraryPage({
                 <h2 className="truncate text-sm font-semibold">{content.title ?? "未命名内容"}</h2>
                 <p className="mt-1 font-mono text-xs text-subtle-foreground">{content.sign}</p>
                 <p className="mt-1 text-xs text-muted-foreground">{formatDateTime(content.createdAt)}</p>
+                <p className="mt-1 inline-flex items-center gap-1 text-xs text-muted-foreground">
+                  <Heart className="h-3.5 w-3.5" />
+                  点赞 {content.likeCount}
+                </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
+                <button
+                  className="flex h-7 min-w-10 items-center justify-center gap-1 rounded-md border border-border bg-surface px-2 text-xs font-semibold text-subtle-foreground transition-colors hover:border-primary/40 hover:text-primary-text disabled:opacity-60"
+                  disabled={busyLikeId === content.id}
+                  onClick={() => void submitLike(content.id)}
+                  type="button"
+                  aria-label="点赞内容"
+                >
+                  <Heart className="h-4 w-4" />
+                  {content.likeCount}
+                </button>
                 <button
                   className={cn(
                     "flex h-7 min-w-7 items-center justify-center rounded-md border border-border bg-surface px-1 text-xs font-semibold text-subtle-foreground transition-colors hover:border-primary/40 hover:text-primary-text",
@@ -2049,6 +2098,191 @@ function ContentLibraryPage({
 
 function auditStateLabel(state: AuditState) {
   return auditStateOptions.find((option) => option.value === state)?.label ?? state;
+}
+
+function PicApiPreviewPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePreviewOpener }) {
+  const [mode, setMode] = useState<PicPreviewMode>("latest");
+  const [viewMode, setViewMode] = useState<PicViewMode>("display");
+  const [tagMode, setTagMode] = useState<TagMode>("and");
+  const [contentType, setContentType] = useState<MediaType | "all">("all");
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [tags, setTags] = useState<TagDto[]>([]);
+  const [items, setItems] = useState<PicContentItemDto[]>([]);
+  const [total, setTotal] = useState(0);
+  const [rawResponse, setRawResponse] = useState<unknown>();
+  const [loading, setLoading] = useState(false);
+  const [busyLikeId, setBusyLikeId] = useState("");
+  const [previewContent, setPreviewContent] = useState<PicContentItemDto | null>(null);
+  const [previewElement, setPreviewElement] = useState<MediaElement | null>(null);
+  const [error, setError] = useState("");
+
+  async function refreshItems() {
+    setLoading(true);
+    try {
+      const loader = mode === "hot" ? listPicHot : listPicLatest;
+      const page = await loader({ tags: selectedTags, tagMode, type: contentType, page: 1, size: 24 });
+      setItems(page.data);
+      setTotal(page.total);
+      setRawResponse({ success: true, message: "ok", data: page });
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "加载取图接口失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    listTags()
+      .then(setTags)
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载 tag 失败"));
+  }, []);
+
+  useEffect(() => {
+    void refreshItems();
+  }, [contentType, mode, selectedTags, tagMode]);
+
+  function openElementPreview(element: MediaElement, elements: MediaElement[]) {
+    if (element.type === "image") {
+      const groups = collectContentImagePreviewGroups(items);
+      const activeSrc = imagePreviewSrc(element);
+      const groupIndex = Math.max(
+        0,
+        groups.findIndex((group) => group.images.some((image) => image.src === activeSrc)),
+      );
+      onOpenImagePreview(elements, element, groups, groupIndex);
+      return;
+    }
+    setPreviewElement(element);
+  }
+
+  async function submitLike(contentId: string) {
+    setBusyLikeId(contentId);
+    try {
+      const result = await likePicContent(contentId);
+      setItems((current) => current.map((content) => (content.id === contentId ? { ...content, likeCount: result.likeCount } : content)));
+      setPreviewContent((current) => (current?.id === contentId ? { ...current, likeCount: result.likeCount } : current));
+      setRawResponse((current: unknown) => {
+        if (!current || typeof current !== "object" || !("data" in current)) return current;
+        const response = current as { data?: { total: number; data: PicContentItemDto[] } };
+        if (!response.data?.data) return current;
+        return {
+          ...response,
+          data: {
+            ...response.data,
+            data: response.data.data.map((content) => (content.id === contentId ? { ...content, likeCount: result.likeCount } : content)),
+          },
+        };
+      });
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "点赞失败");
+    } finally {
+      setBusyLikeId("");
+    }
+  }
+
+  return (
+    <section className="space-y-4">
+      <Card className="space-y-4 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="text-base font-semibold">取图接口</h1>
+            <p className="mt-1 text-xs text-muted-foreground">按当前条件调用最新或最热图片接口，点赞会写入来源和日期。</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge>{total} 条</Badge>
+            <div className="flex rounded-md border border-border bg-surface p-1">
+              <Button className="h-8 px-3" variant={mode === "latest" ? "primary" : "ghost"} onClick={() => setMode("latest")}>
+                <Clock3 className="h-4 w-4" />
+                最新
+              </Button>
+              <Button className="h-8 px-3" variant={mode === "hot" ? "primary" : "ghost"} onClick={() => setMode("hot")}>
+                <Flame className="h-4 w-4" />
+                最热
+              </Button>
+            </div>
+            <div className="flex rounded-md border border-border bg-surface p-1">
+              <Button className="h-8 px-3" variant={viewMode === "display" ? "primary" : "ghost"} onClick={() => setViewMode("display")}>
+                展示
+              </Button>
+              <Button className="h-8 px-3" variant={viewMode === "raw" ? "primary" : "ghost"} onClick={() => setViewMode("raw")}>
+                原文
+              </Button>
+            </div>
+            <Button className="h-9" variant="secondary" disabled={loading} onClick={() => void refreshItems()}>
+              刷新
+            </Button>
+          </div>
+        </div>
+        <div className="grid gap-3 lg:grid-cols-[1fr_auto_auto] lg:items-end">
+          <TagSelectInput
+            label="筛选 tag"
+            selectedTags={selectedTags}
+            placeholder="输入 tag 名称筛选"
+            suggestions={tags}
+            allowCreate={false}
+            onChange={setSelectedTags}
+          />
+          <SelectField label="内容类型" value={contentType} options={kindOptions} onChange={setContentType} />
+          <div className="flex rounded-md border border-border bg-surface p-1">
+            <Button className="h-8 px-3" variant={tagMode === "and" ? "primary" : "ghost"} onClick={() => setTagMode("and")}>
+              AND
+            </Button>
+            <Button className="h-8 px-3" variant={tagMode === "or" ? "primary" : "ghost"} onClick={() => setTagMode("or")}>
+              OR
+            </Button>
+          </div>
+        </div>
+      </Card>
+      {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
+      {viewMode === "raw" ? (
+        <Card className="overflow-hidden">
+          <pre className="max-h-[70vh] overflow-auto bg-surface-muted p-4 text-xs leading-5 text-foreground">{JSON.stringify(rawResponse ?? { success: true, message: "ok", data: { total, data: items } }, null, 2)}</pre>
+        </Card>
+      ) : (
+        <>
+          <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
+            {items.map((content) => (
+              <Card key={content.id} className="flex aspect-square min-h-0 flex-col overflow-hidden p-3">
+                <div className="mb-2 flex shrink-0 items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h2 className="truncate text-sm font-semibold">{content.title ?? "未命名内容"}</h2>
+                    <p className="mt-1 font-mono text-xs text-subtle-foreground">{content.sign}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{formatDateTime(content.createdAt)}</p>
+                  </div>
+                  <Button
+                    className="h-8 min-w-14 px-2"
+                    variant="secondary"
+                    disabled={busyLikeId === content.id}
+                    aria-label="点赞内容"
+                    onClick={() => void submitLike(content.id)}
+                  >
+                    <Heart className="h-4 w-4" />
+                    {content.likeCount}
+                  </Button>
+                </div>
+                <div className="mb-2 flex max-h-14 shrink-0 flex-wrap gap-1 overflow-hidden">
+                  {content.tags.map((tag) => (
+                    <Badge key={tag} className="border-primary/30 bg-primary-muted text-primary-text">
+                      {tag}
+                    </Badge>
+                  ))}
+                  {content.tags.length === 0 && <span className="text-xs text-muted-foreground">暂无 tag</span>}
+                </div>
+                <div className="min-h-0 flex-1">
+                  <ContentPreview content={content} onOpenContent={setPreviewContent} onOpenElement={(element) => openElementPreview(element, content.elements)} />
+                </div>
+              </Card>
+            ))}
+          </div>
+          {items.length === 0 && <Card className="p-8 text-center text-sm text-muted-foreground">没有符合当前条件的内容。</Card>}
+        </>
+      )}
+      {previewContent && <ContentDetailModal content={previewContent} onClose={() => setPreviewContent(null)} onOpenElement={(element) => openElementPreview(element, previewContent.elements)} />}
+      {previewElement && <MediaElementModal element={previewElement} onClose={() => setPreviewElement(null)} />}
+    </section>
+  );
 }
 
 function SourceProfileSummary({ profile }: { profile?: SourceProfileDto }) {
@@ -2452,9 +2686,13 @@ function DashboardPreview({ contents, events }: { contents: MediaContentDto[]; e
         </div>
         <div className="overflow-hidden rounded-md border border-border">
           {contents.slice(0, 3).map((content) => (
-            <div key={content.id} className="grid grid-cols-[1fr_88px_92px_72px] items-center border-b border-border bg-surface px-3 py-2 text-sm last:border-b-0 hover:bg-surface-muted">
+            <div key={content.id} className="grid grid-cols-[1fr_72px_72px_92px_72px] items-center border-b border-border bg-surface px-3 py-2 text-sm last:border-b-0 hover:bg-surface-muted">
               <span className="font-medium">{content.title ?? "未命名内容"}</span>
               <span className="text-muted-foreground">{content.type}</span>
+              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                <Heart className="h-3.5 w-3.5" />
+                {content.likeCount}
+              </span>
               <span className={cn("text-xs", content.auditState === "approved" ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400")}>{content.auditState}</span>
               <span className="text-right text-xs text-subtle-foreground">{content.tags.length} tags</span>
             </div>
@@ -2863,6 +3101,7 @@ export default function App() {
             />
           )}
           {page === "library" && <ContentLibraryPage onOpenImagePreview={openImagePreview} onOpenWorkspace={() => changePage("workspace")} />}
+          {page === "pic" && <PicApiPreviewPage onOpenImagePreview={openImagePreview} />}
           {page === "audits" && <AuditsPage onOpenImagePreview={openImagePreview} />}
           {page === "events" && <EventsPage />}
           {page === "tags" && <TagManagementPage />}

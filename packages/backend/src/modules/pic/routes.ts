@@ -85,7 +85,7 @@ function parseLikeDate(value: string | undefined) {
 type PicListQuery = {
   tags?: string;
   tagMode?: "and" | "or";
-  type?: MediaType;
+  type?: MediaType | "all";
   page?: string;
   size?: string;
 };
@@ -95,11 +95,11 @@ async function listPicContents(query: PicListQuery, orderBy: Prisma.MediaContent
   const size = parseSize(query.size);
   const tags = await resolveTagAliases(prisma, parseTags(query.tags));
   const tagMode = query.tagMode ?? "and";
-  const type = query.type ?? "image";
   const where: Prisma.MediaContentWhereInput = {
-    type,
     auditState: "approved",
   };
+  if (query.type && query.type !== "all") where.type = query.type;
+  if (!query.type) where.type = "image";
   if (tags.length > 0) where.tags = tagMode === "or" ? { hasSome: tags } : { hasEvery: tags };
 
   const [total, rows] = await Promise.all([

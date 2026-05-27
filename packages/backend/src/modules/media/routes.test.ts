@@ -80,6 +80,24 @@ describe("media routes", () => {
     });
   });
 
+  it("列表查询支持按点赞数排序", async () => {
+    mockPrisma.tagAlias.findMany.mockResolvedValue([]);
+    mockPrisma.mediaContent.count.mockResolvedValue(1);
+    mockPrisma.mediaContent.findMany.mockResolvedValue([contentRow({ likeCount: BigInt(9) })]);
+    const app = await createMediaApp();
+
+    const response = await app.inject({ method: "GET", url: "/api/media?sort=like_desc&auditState=approved" });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ success: true, data: { data: [{ likeCount: 9 }] } });
+    expect(mockPrisma.mediaContent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: [{ likeCount: "desc" }, { createdAt: "desc" }],
+      }),
+    );
+  });
+
   it("按文件反查会校验 md5 格式", async () => {
     const app = await createMediaApp();
 

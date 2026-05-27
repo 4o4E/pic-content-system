@@ -44,7 +44,10 @@ export interface PicRandomQueryDto {
   type?: MediaType;
 }
 
-export interface PicContentListQueryDto extends PicRandomQueryDto {
+export interface PicContentListQueryDto {
+  tags?: string[];
+  tagMode?: "and" | "or";
+  type?: MediaType | "all";
   page?: number;
   size?: number;
 }

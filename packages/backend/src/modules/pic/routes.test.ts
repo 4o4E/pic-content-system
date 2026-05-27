@@ -179,6 +179,27 @@ describe("pic routes", () => {
     );
   });
 
+  it("最新内容接口 type=all 时返回所有已审核内容类型", async () => {
+    mockPrisma.tagAlias.findMany.mockResolvedValue([]);
+    mockPrisma.mediaContent.count.mockResolvedValue(1);
+    mockPrisma.mediaContent.findMany.mockResolvedValue([contentRow({ id: "composite-content", type: "composite" })]);
+    const app = await createPicOnlyApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/pic/latest?type=all",
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ success: true, data: { data: [{ id: "composite-content", type: "composite" }] } });
+    expect(mockPrisma.mediaContent.count).toHaveBeenCalledWith({
+      where: {
+        auditState: "approved",
+      },
+    });
+  });
+
   it("最热内容接口按点赞数倒序返回已审核内容", async () => {
     mockPrisma.tagAlias.findMany.mockResolvedValue([]);
     mockPrisma.mediaContent.count.mockResolvedValue(1);

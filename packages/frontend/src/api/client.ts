@@ -16,12 +16,14 @@ import type {
   CreateMediaContentDto,
   CreateMediaFileDto,
   IngestEventDto,
+  LikeMediaContentResultDto,
   MediaAssetDto,
   MediaAssetStatus,
   MediaContentDto,
   MediaFileDto,
   MediaType,
   PageResp,
+  PicContentItemDto,
   Platform,
   TagAliasDto,
   TagDto,
@@ -30,6 +32,7 @@ import type {
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 const TOKEN_KEY = "pic-content-token";
+const LIKE_SOURCE_KEY = "pic-content-like-source";
 
 export interface AssetQuery {
   q?: string;
@@ -43,12 +46,20 @@ export interface MediaQuery {
   q?: string;
   tags?: string[];
   tagMode?: "and" | "or";
-  sort?: "time_desc" | "time_asc";
+  sort?: "time_desc" | "time_asc" | "like_desc" | "like_asc";
   type?: MediaType | "all";
   auditState?: AuditState | "all";
   sourcePlatform?: Platform;
   sourceGroupId?: string;
   sourceUserId?: string;
+  page?: number;
+  size?: number;
+}
+
+export interface PicContentQuery {
+  tags?: string[];
+  tagMode?: "and" | "or";
+  type?: MediaType | "all";
   page?: number;
   size?: number;
 }
@@ -158,6 +169,40 @@ export function listMedia(query: MediaQuery = {}) {
       size: query.size ?? 60,
     }),
   );
+}
+
+function picContentQuery(path: string, query: PicContentQuery = {}) {
+  return withQuery(path, {
+    tags: query.tags?.join(","),
+    tagMode: query.tagMode,
+    type: query.type,
+    page: query.page ?? 1,
+    size: query.size ?? 20,
+  });
+}
+
+export function listPicLatest(query: PicContentQuery = {}) {
+  return request<PageResp<PicContentItemDto>>(picContentQuery("/api/pic/latest", query));
+}
+
+export function listPicHot(query: PicContentQuery = {}) {
+  return request<PageResp<PicContentItemDto>>(picContentQuery("/api/pic/hot", query));
+}
+
+function getLikeSource() {
+  const stored = localStorage.getItem(LIKE_SOURCE_KEY);
+  if (stored) return stored;
+  const randomId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const source = `web:${randomId}`;
+  localStorage.setItem(LIKE_SOURCE_KEY, source);
+  return source;
+}
+
+export function likePicContent(id: string) {
+  return request<LikeMediaContentResultDto>(`/api/pic/contents/${id}/likes`, {
+    method: "POST",
+    body: JSON.stringify({ source: getLikeSource() }),
+  });
 }
 
 export function createMedia(body: CreateMediaContentDto) {

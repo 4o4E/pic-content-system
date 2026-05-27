@@ -33,7 +33,7 @@ export async function registerMediaRoutes(app: FastifyInstance) {
       q?: string;
       tags?: string;
       tagMode?: "and" | "or";
-      sort?: "time_desc" | "time_asc";
+      sort?: "time_desc" | "time_asc" | "like_desc" | "like_asc";
       type?: MediaType | "all";
       auditState?: AuditState | "all";
       sourcePlatform?: string;
@@ -51,7 +51,14 @@ export async function registerMediaRoutes(app: FastifyInstance) {
       const q = request.query.q?.trim();
       const tags = await resolveTagAliases(prisma, parseTags(request.query.tags));
       const tagMode = request.query.tagMode ?? "and";
-      const createdAtSort = request.query.sort === "time_asc" ? "asc" : "desc";
+      const orderBy: Prisma.MediaContentOrderByWithRelationInput[] =
+        request.query.sort === "time_asc"
+          ? [{ createdAt: "asc" }]
+          : request.query.sort === "like_desc"
+            ? [{ likeCount: "desc" }, { createdAt: "desc" }]
+            : request.query.sort === "like_asc"
+              ? [{ likeCount: "asc" }, { createdAt: "desc" }]
+              : [{ createdAt: "desc" }];
       const where: Prisma.MediaContentWhereInput = {};
 
       if (q) {
@@ -81,7 +88,7 @@ export async function registerMediaRoutes(app: FastifyInstance) {
         prisma.mediaContent.findMany({
           where,
           include: { sources: true },
-          orderBy: { createdAt: createdAtSort },
+          orderBy,
           skip: (page - 1) * size,
           take: size,
         }),

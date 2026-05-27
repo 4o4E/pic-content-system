@@ -60,10 +60,14 @@ import {
   archiveAudit,
   batchUpdateMediaTags,
   clearStoredToken,
+  createTag,
+  createTagAlias,
   createMedia,
   deleteAssets,
   deleteAudit,
   deleteMediaContents,
+  deleteTag,
+  deleteTagAlias,
   fileUrl,
   getAuditDetail,
   getStoredToken,
@@ -77,8 +81,10 @@ import {
   listTags,
   likePicContent,
   loginWithToken,
+  mergeTag,
   mergeMediaContents,
   rejectAudit,
+  renameTag,
   restoreMediaContentsToWorkspace,
   resetAudit,
   type TagSort,
@@ -2492,6 +2498,13 @@ function TagManagementPage() {
   const [query, setQuery] = useState(readTagSearchFromUrl);
   const [sort, setSort] = useState<TagSort>(readTagSortFromUrl);
   const [tags, setTags] = useState<TagDto[]>([]);
+  const [tagInput, setTagInput] = useState("");
+  const [tagActionSource, setTagActionSource] = useState("");
+  const [tagActionTarget, setTagActionTarget] = useState("");
+  const [aliasInput, setAliasInput] = useState("");
+  const [aliasTagInput, setAliasTagInput] = useState("");
+  const [editingAlias, setEditingAlias] = useState("");
+  const [pendingDeleteTag, setPendingDeleteTag] = useState("");
   const [error, setError] = useState("");
 
   async function refreshTagData() {
@@ -2519,6 +2532,105 @@ function TagManagementPage() {
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载 tag 失败"));
   }, [query, sort]);
 
+  function clearTagAction() {
+    setTagActionSource("");
+    setTagActionTarget("");
+  }
+
+  function startTagAction(name: string) {
+    setTagActionSource(name);
+    setTagActionTarget(name);
+  }
+
+  function clearAliasForm() {
+    setAliasInput("");
+    setAliasTagInput("");
+    setEditingAlias("");
+  }
+
+  function startEditAlias(alias: string, tag: string) {
+    setAliasInput(alias);
+    setAliasTagInput(tag);
+    setEditingAlias(alias);
+  }
+
+  async function submitCreateTag() {
+    const name = parseTagInput(tagInput)[0];
+    if (!name) return;
+    try {
+      await createTag({ name });
+      setTagInput("");
+      await refreshTagData();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "创建 tag 失败");
+    }
+  }
+
+  async function submitRenameTag() {
+    const from = parseTagInput(tagActionSource)[0];
+    const to = parseTagInput(tagActionTarget)[0];
+    if (!from || !to) return;
+    try {
+      await renameTag({ from, to });
+      clearTagAction();
+      await refreshTagData();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "改名 tag 失败");
+    }
+  }
+
+  async function submitMergeTag() {
+    const from = parseTagInput(tagActionSource)[0];
+    const to = parseTagInput(tagActionTarget)[0];
+    if (!from || !to) return;
+    try {
+      await mergeTag({ from, to });
+      clearTagAction();
+      await refreshTagData();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "合并 tag 失败");
+    }
+  }
+
+  async function removeTag(name: string) {
+    if (pendingDeleteTag !== name) {
+      setPendingDeleteTag(name);
+      return;
+    }
+    try {
+      await deleteTag(name);
+      if (tagActionSource === name) clearTagAction();
+      setPendingDeleteTag("");
+      await refreshTagData();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "删除 tag 失败");
+    }
+  }
+
+  async function submitAlias() {
+    const alias = aliasInput.trim().toLowerCase();
+    const tag = parseTagInput(aliasTagInput)[0];
+    if (!alias || !tag) return;
+    try {
+      await createTagAlias({ alias, tag });
+      if (editingAlias && editingAlias !== alias) await deleteTagAlias(editingAlias);
+      clearAliasForm();
+      await refreshTagData();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "保存 alias 失败");
+    }
+  }
+
+  async function removeAlias(alias: string) {
+    try {
+      await deleteTagAlias(alias);
+      if (editingAlias === alias) clearAliasForm();
+      await refreshTagData();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "删除 alias 失败");
+    }
+  }
+
   return (
     <section className="space-y-4">
       <Card className="p-4">
@@ -2535,28 +2647,123 @@ function TagManagementPage() {
           <SelectField label="排序" value={sort} options={tagSortOptions} onChange={setSort} />
         </div>
       </Card>
+      <Card className="space-y-3 p-4">
+        <div className="grid gap-3 lg:grid-cols-[minmax(180px,1fr)_auto_minmax(180px,1fr)_minmax(180px,1fr)_auto_auto] lg:items-end">
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">新 tag</span>
+            <input
+              className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+              placeholder="输入 tag"
+              value={tagInput}
+              onChange={(event) => setTagInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void submitCreateTag();
+              }}
+            />
+          </label>
+          <Button className="h-9" disabled={!tagInput.trim()} variant="primary" onClick={() => void submitCreateTag()}>
+            <Plus className="h-4 w-4" />
+            创建 tag
+          </Button>
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">来源 tag</span>
+            <input
+              className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+              placeholder="要改名或合并的 tag"
+              value={tagActionSource}
+              onChange={(event) => setTagActionSource(event.target.value)}
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">目标 tag</span>
+            <input
+              className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+              placeholder="新名称或合并目标"
+              value={tagActionTarget}
+              onChange={(event) => setTagActionTarget(event.target.value)}
+            />
+          </label>
+          <Button className="h-9" disabled={!tagActionSource.trim() || !tagActionTarget.trim()} variant="secondary" onClick={() => void submitRenameTag()}>
+            改名
+          </Button>
+          <Button className="h-9" disabled={!tagActionSource.trim() || !tagActionTarget.trim()} variant="secondary" onClick={() => void submitMergeTag()}>
+            合并
+          </Button>
+        </div>
+      </Card>
+      <Card className="space-y-3 p-4">
+        <div className="grid gap-3 lg:grid-cols-[minmax(180px,1fr)_minmax(180px,1fr)_auto_auto] lg:items-end">
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">Alias</span>
+            <input
+              className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+              placeholder="例如 dt"
+              value={aliasInput}
+              onChange={(event) => setAliasInput(event.target.value)}
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">目标 tag</span>
+            <input
+              className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+              placeholder="alias 解析到的 tag"
+              value={aliasTagInput}
+              onChange={(event) => setAliasTagInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void submitAlias();
+              }}
+            />
+          </label>
+          <Button className="h-9" disabled={!aliasInput.trim() || !aliasTagInput.trim()} variant="primary" onClick={() => void submitAlias()}>
+            {editingAlias ? "更新 alias" : "创建 alias"}
+          </Button>
+          {editingAlias && (
+            <Button className="h-9" variant="ghost" onClick={clearAliasForm}>
+              取消
+            </Button>
+          )}
+        </div>
+      </Card>
       {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
       <Card className="overflow-hidden">
-        <div className="hidden grid-cols-[minmax(140px,1.1fr)_minmax(180px,1.4fr)_90px_150px] gap-3 border-b border-border px-4 py-3 text-xs font-semibold text-muted-foreground md:grid">
+        <div className="hidden grid-cols-[minmax(140px,1.1fr)_minmax(180px,1.4fr)_90px_150px_190px] gap-3 border-b border-border px-4 py-3 text-xs font-semibold text-muted-foreground md:grid">
           <span>Tag</span>
           <span>Alias</span>
           <span>数量</span>
           <span>创建时间</span>
+          <span>操作</span>
         </div>
         {tags.map((tag) => (
-          <div key={tag.name} className="grid gap-3 border-b border-border px-4 py-3 text-sm last:border-b-0 md:grid-cols-[minmax(140px,1.1fr)_minmax(180px,1.4fr)_90px_150px] md:items-center">
+          <div key={tag.name} className="grid gap-3 border-b border-border px-4 py-3 text-sm last:border-b-0 md:grid-cols-[minmax(140px,1.1fr)_minmax(180px,1.4fr)_90px_150px_190px] md:items-center">
             <div className="min-w-0">
               <div className="truncate font-medium">{tag.name}</div>
               <div className="mt-1 text-xs text-subtle-foreground">正式内容 tag</div>
             </div>
             <div className="flex min-w-0 flex-wrap gap-1">
               {(tag.aliases ?? []).map((alias) => (
-                <Badge key={alias} className="border-primary/30 bg-primary-muted text-primary-text">{alias}</Badge>
+                <span key={alias} className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary-muted px-2 py-0.5 text-xs font-medium text-primary-text">
+                  {alias}
+                  <button type="button" className="text-primary-text/80 hover:text-primary-text" onClick={() => startEditAlias(alias, tag.name)}>
+                    编辑
+                  </button>
+                  <button type="button" className="text-red-600 hover:text-red-500 dark:text-red-400" onClick={() => void removeAlias(alias)}>
+                    删除
+                  </button>
+                </span>
               ))}
               {(tag.aliases ?? []).length === 0 && <span className="text-xs text-subtle-foreground">暂无 alias</span>}
             </div>
             <Badge>{tag.count}</Badge>
             <span className="text-xs text-subtle-foreground">{tag.createdAt ? formatDateTime(tag.createdAt) : "--"}</span>
+            <div className="flex flex-wrap gap-2">
+              <Button className="h-8" variant="secondary" onClick={() => startTagAction(tag.name)}>
+                选择
+              </Button>
+              <Button className="h-8" variant={pendingDeleteTag === tag.name ? "danger" : "secondary"} onClick={() => void removeTag(tag.name)}>
+                <Trash2 className="h-4 w-4" />
+                {pendingDeleteTag === tag.name ? "确认删除" : "删除"}
+              </Button>
+            </div>
           </div>
         ))}
         {tags.length === 0 && <div className="p-8 text-center text-sm text-muted-foreground">没有找到匹配的 tag。</div>}

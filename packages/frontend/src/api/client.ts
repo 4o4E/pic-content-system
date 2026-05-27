@@ -27,6 +27,11 @@ import type {
   Platform,
   TagAliasDto,
   TagDto,
+  DeleteTagResultDto,
+  MergeTagDto,
+  RenameTagDto,
+  RenameTagResultDto,
+  UpsertTagDto,
   UpsertTagAliasDto,
 } from "@pic/shared";
 
@@ -244,6 +249,31 @@ export function restoreMediaContentsToWorkspace(body: BatchRestoreMediaContentsT
 
 export function listTags(q?: string, sort?: TagSort) {
   return request<TagDto[]>(withQuery("/api/tags", { q, sort }));
+}
+
+export function createTag(body: UpsertTagDto) {
+  return request<TagDto>("/api/tags", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function renameTag(body: RenameTagDto) {
+  return request<RenameTagResultDto>("/api/tags/rename", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function mergeTag(body: MergeTagDto) {
+  return request<RenameTagResultDto>("/api/tags/merge", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteTag(name: string) {
+  return request<DeleteTagResultDto>(`/api/tags/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
 export function listTagAliases(q?: string) {

@@ -2,6 +2,12 @@ import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mockPrisma = vi.hoisted(() => ({
+  tag: {
+    findMany: vi.fn(),
+    findUnique: vi.fn(),
+    upsert: vi.fn(),
+    deleteMany: vi.fn(),
+  },
   contentTag: {
     groupBy: vi.fn(),
   },
@@ -35,6 +41,7 @@ describe("tag routes", () => {
 
   it("列出 tag 聚合结果", async () => {
     const createdAt = new Date("2026-01-01T00:00:00Z");
+    mockPrisma.tag.findMany.mockResolvedValue([{ name: "弔图", createdAt, updatedAt: createdAt }]);
     mockPrisma.tagAlias.findMany
       .mockResolvedValueOnce([{ alias: "dt", tag: "弔图", createdAt, updatedAt: createdAt }])
       .mockResolvedValueOnce([{ alias: "dt", tag: "弔图", createdAt, updatedAt: createdAt }]);
@@ -50,7 +57,11 @@ describe("tag routes", () => {
 
   it("alias CRUD 会统一小写 alias", async () => {
     const row = { alias: "dt", tag: "弔图", createdAt: new Date("2026-01-01T00:00:00Z"), updatedAt: new Date("2026-01-01T00:00:00Z") };
-    mockPrisma.tagAlias.upsert.mockResolvedValue(row);
+    const tx = {
+      tag: { upsert: vi.fn().mockResolvedValue({ name: "弔图" }) },
+      tagAlias: { upsert: vi.fn().mockResolvedValue(row) },
+    };
+    mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
     mockPrisma.tagAlias.deleteMany.mockResolvedValue({ count: 1 });
     const app = await createTagApp();
 
@@ -60,7 +71,8 @@ describe("tag routes", () => {
 
     expect(post.statusCode).toBe(200);
     expect(post.json()).toMatchObject({ data: { alias: "dt", tag: "弔图" } });
-    expect(mockPrisma.tagAlias.upsert).toHaveBeenCalledWith({
+    expect(tx.tag.upsert).toHaveBeenCalledWith({ where: { name: "弔图" }, create: { name: "弔图" }, update: {} });
+    expect(tx.tagAlias.upsert).toHaveBeenCalledWith({
       where: { alias: "dt" },
       create: { alias: "dt", tag: "弔图" },
       update: { tag: "弔图" },
@@ -92,6 +104,14 @@ describe("tag routes", () => {
         deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
         createMany: vi.fn().mockResolvedValue({ count: 2 }),
       },
+      tag: {
+        findUnique: vi.fn()
+          .mockResolvedValueOnce(undefined)
+          .mockResolvedValueOnce({ name: "旧tag", createdAt: new Date("2026-01-01T00:00:00Z") }),
+        upsert: vi.fn().mockResolvedValue({ name: "新tag" }),
+        createMany: vi.fn().mockResolvedValue({ count: 2 }),
+        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
       tagAlias: {
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
@@ -100,6 +120,40 @@ describe("tag routes", () => {
     const app = await createTagApp();
 
     const response = await app.inject({ method: "POST", url: "/api/tags/rename", payload: { from: "旧tag", to: "新tag" } });
+    await app.close();
+
+    expect(response.json()).toMatchObject({ success: true, data: { updated: 1 } });
+    expect(tx.mediaContent.update).toHaveBeenCalledWith({ where: { id: "content-id" }, data: { tags: ["新tag", "其他"] } });
+  });
+
+  it("merge 会替换 tag 并去重", async () => {
+    const content = {
+      id: "content-id",
+      tags: ["旧tag", "新tag", "其他"],
+    };
+    const tx = {
+      tag: {
+        findUnique: vi.fn().mockResolvedValue({ name: "旧tag", createdAt: new Date("2026-01-01T00:00:00Z") }),
+        upsert: vi.fn().mockResolvedValue({ name: "新tag" }),
+        createMany: vi.fn().mockResolvedValue({ count: 2 }),
+        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      mediaContent: {
+        findMany: vi.fn().mockResolvedValue([content]),
+        update: vi.fn().mockResolvedValue(content),
+      },
+      contentTag: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+        createMany: vi.fn().mockResolvedValue({ count: 2 }),
+      },
+      tagAlias: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
+    const app = await createTagApp();
+
+    const response = await app.inject({ method: "POST", url: "/api/tags/merge", payload: { from: "旧tag", to: "新tag" } });
     await app.close();
 
     expect(response.json()).toMatchObject({ success: true, data: { updated: 1 } });

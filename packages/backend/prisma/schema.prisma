@@ -160,6 +160,14 @@ model WorkspaceDraft {
   @@map("workspace_draft")
 }
 
+model Tag {
+  name      String   @id
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("tag")
+}
+
 model ContentTag {
   id        String   @id @db.VarChar(16)
   contentId String   @map("content_id") @db.VarChar(16)

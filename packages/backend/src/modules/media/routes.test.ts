@@ -2,6 +2,9 @@ import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mockPrisma = vi.hoisted(() => ({
+  tag: {
+    createMany: vi.fn(),
+  },
   tagAlias: {
     findMany: vi.fn(),
   },
@@ -146,6 +149,9 @@ describe("media routes", () => {
         deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
         createMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
+      tag: {
+        createMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
     };
     mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
     mockPrisma.mediaContent.findUnique.mockResolvedValue(contentRow({ tags: ["弔图"] }));
@@ -168,6 +174,9 @@ describe("media routes", () => {
       },
       contentTag: {
         deleteMany: vi.fn().mockResolvedValue({ count: 2 }),
+        createMany: vi.fn().mockResolvedValue({ count: 2 }),
+      },
+      tag: {
         createMany: vi.fn().mockResolvedValue({ count: 2 }),
       },
     };
@@ -210,6 +219,9 @@ describe("media routes", () => {
       },
       contentTag: {
         deleteMany: vi.fn().mockResolvedValue({ count: 2 }),
+        createMany: vi.fn().mockResolvedValue({ count: 2 }),
+      },
+      tag: {
         createMany: vi.fn().mockResolvedValue({ count: 2 }),
       },
     };

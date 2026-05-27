@@ -3,6 +3,9 @@ import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mockPrisma = vi.hoisted(() => ({
+  tag: {
+    createMany: vi.fn(),
+  },
   tagAlias: {
     findMany: vi.fn(),
   },
@@ -427,6 +430,9 @@ describe("pic routes", () => {
         deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
         createMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
+      tag: {
+        createMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
       sourceBinding: {
         findFirst: vi.fn().mockResolvedValue(undefined),
         create: vi.fn().mockResolvedValue({ id: "source-id" }),
@@ -548,6 +554,9 @@ describe("pic routes", () => {
         deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
         createMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
+      tag: {
+        createMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
       sourceBinding: {
         findFirst: vi.fn().mockResolvedValue(undefined),
         create: vi.fn().mockResolvedValue({ id: "source-id" }),
@@ -641,6 +650,9 @@ describe("pic routes", () => {
       },
       contentTag: {
         deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+        createMany: vi.fn().mockResolvedValue({ count: 2 }),
+      },
+      tag: {
         createMany: vi.fn().mockResolvedValue({ count: 2 }),
       },
       sourceBinding: {

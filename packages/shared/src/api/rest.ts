@@ -21,6 +21,10 @@ export interface UpsertTagAliasDto {
   tag: string;
 }
 
+export interface UpsertTagDto {
+  name: string;
+}
+
 export interface ResolveTagsDto {
   tags: string[];
 }
@@ -34,7 +38,17 @@ export interface RenameTagDto {
   to: string;
 }
 
+export interface MergeTagDto {
+  from: string;
+  to: string;
+}
+
 export interface RenameTagResultDto {
+  updated: number;
+}
+
+export interface DeleteTagResultDto {
+  deleted: number;
   updated: number;
 }
 

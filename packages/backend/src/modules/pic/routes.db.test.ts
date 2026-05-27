@@ -22,6 +22,7 @@ async function cleanDatabase() {
   await prisma.mediaContent.deleteMany();
   await prisma.mediaFile.deleteMany();
   await prisma.tagAlias.deleteMany();
+  await prisma.tag.deleteMany();
 }
 
 describe("pic routes db", () => {

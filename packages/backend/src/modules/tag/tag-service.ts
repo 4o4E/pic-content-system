@@ -29,6 +29,10 @@ export async function resolveTagsWithDefaultDb(tags: string[] | undefined) {
 export async function syncContentTags(tx: Prisma.TransactionClient, contentId: string, tags: string[]) {
   await tx.contentTag.deleteMany({ where: { contentId } });
   if (tags.length > 0) {
+    await tx.tag.createMany({
+      data: tags.map((name) => ({ name })),
+      skipDuplicates: true,
+    });
     await tx.contentTag.createMany({
       data: tags.map((tag) => ({ id: nextSnowflakeId(), contentId, tag })),
       skipDuplicates: true,

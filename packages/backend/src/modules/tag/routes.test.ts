@@ -34,14 +34,18 @@ describe("tag routes", () => {
   });
 
   it("列出 tag 聚合结果", async () => {
-    mockPrisma.contentTag.groupBy.mockResolvedValue([{ tag: "弔图", _count: { tag: 2 } }]);
+    const createdAt = new Date("2026-01-01T00:00:00Z");
+    mockPrisma.tagAlias.findMany
+      .mockResolvedValueOnce([{ alias: "dt", tag: "弔图", createdAt, updatedAt: createdAt }])
+      .mockResolvedValueOnce([{ alias: "dt", tag: "弔图", createdAt, updatedAt: createdAt }]);
+    mockPrisma.contentTag.groupBy.mockResolvedValue([{ tag: "弔图", _count: { tag: 2 }, _min: { createdAt } }]);
     const app = await createTagApp();
 
-    const response = await app.inject({ method: "GET", url: "/api/tags?q=弔" });
+    const response = await app.inject({ method: "GET", url: "/api/tags?q=dt&sort=time_asc" });
     await app.close();
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ success: true, data: [{ name: "弔图", count: 2 }] });
+    expect(response.json()).toMatchObject({ success: true, data: [{ name: "弔图", count: 2, aliases: ["dt"], createdAt: createdAt.toISOString() }] });
   });
 
   it("alias CRUD 会统一小写 alias", async () => {

@@ -5,6 +5,8 @@ export interface AuthSessionDto {
 export interface TagDto {
   name: string;
   count: number;
+  aliases?: string[];
+  createdAt?: string;
 }
 
 export interface TagAliasDto {

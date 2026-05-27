@@ -56,6 +56,8 @@ export interface MediaQuery {
   size?: number;
 }
 
+export type TagSort = "count_desc" | "count_asc" | "time_desc" | "time_asc";
+
 export interface PicContentQuery {
   tags?: string[];
   tagMode?: "and" | "or";
@@ -240,8 +242,8 @@ export function restoreMediaContentsToWorkspace(body: BatchRestoreMediaContentsT
   });
 }
 
-export function listTags(q?: string) {
-  return request<TagDto[]>(withQuery("/api/tags", { q }));
+export function listTags(q?: string, sort?: TagSort) {
+  return request<TagDto[]>(withQuery("/api/tags", { q, sort }));
 }
 
 export function listTagAliases(q?: string) {

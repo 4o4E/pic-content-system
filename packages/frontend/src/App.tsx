@@ -10,7 +10,6 @@ import type {
   MediaType,
   PicContentItemDto,
   SourceProfileDto,
-  TagAliasDto,
   TagDto,
   WorkspaceDraftDto,
 } from "@pic/shared";
@@ -61,12 +60,10 @@ import {
   archiveAudit,
   batchUpdateMediaTags,
   clearStoredToken,
-  createTagAlias,
   createMedia,
   deleteAssets,
   deleteAudit,
   deleteMediaContents,
-  deleteTagAlias,
   fileUrl,
   getAuditDetail,
   getStoredToken,
@@ -77,7 +74,6 @@ import {
   listMedia,
   listPicHot,
   listPicLatest,
-  listTagAliases,
   listTags,
   likePicContent,
   loginWithToken,
@@ -85,6 +81,7 @@ import {
   rejectAudit,
   restoreMediaContentsToWorkspace,
   resetAudit,
+  type TagSort,
 } from "@/api/client";
 
 type ThemeMode = "light" | "dark";
@@ -162,9 +159,17 @@ const librarySortOptions: Array<{ label: string; value: LibrarySort }> = [
   { label: "点赞数正序", value: "like_asc" },
 ];
 
+const tagSortOptions: Array<{ label: string; value: TagSort }> = [
+  { label: "数量倒序", value: "count_desc" },
+  { label: "数量正序", value: "count_asc" },
+  { label: "创建时间倒序", value: "time_desc" },
+  { label: "创建时间正序", value: "time_asc" },
+];
+
 const defaultLibraryPage = 1;
 const defaultLibraryPageSize = 100;
 const defaultLibrarySort: LibrarySort = "time_desc";
+const defaultTagSort: TagSort = "count_desc";
 const libraryPageSizeOptions = [50, 100, 200];
 
 const pagePaths: Record<PageKey, string> = {
@@ -256,7 +261,8 @@ function isMediaKindFilter(value: string | null): value is MediaType | "all" {
 }
 
 function tagMatchesKeyword(tag: TagDto, keyword: string) {
-  return tag.name.toLowerCase().includes(keyword.toLowerCase());
+  const lowerKeyword = keyword.toLowerCase();
+  return tag.name.toLowerCase().includes(lowerKeyword) || (tag.aliases ?? []).some((alias) => alias.toLowerCase().includes(lowerKeyword));
 }
 
 function parseTagInput(value: string) {
@@ -347,14 +353,16 @@ function readTagSearchFromUrl() {
   return new URLSearchParams(window.location.search).get("q") ?? "";
 }
 
-function updateTagSearchQuery(query: string) {
-  replaceRouteQuery(pagePaths.tags, {
-    q: query.trim() || undefined,
-  });
+function readTagSortFromUrl() {
+  const sort = new URLSearchParams(window.location.search).get("sort");
+  return tagSortOptions.some((option) => option.value === sort) ? (sort as TagSort) : defaultTagSort;
 }
 
-function normalizeTagAliasInput(alias: string) {
-  return alias.trim().toLowerCase();
+function updateTagSearchQuery(query: string, sort: TagSort) {
+  replaceRouteQuery(pagePaths.tags, {
+    q: query.trim() || undefined,
+    sort: sort === defaultTagSort ? undefined : sort,
+  });
 }
 
 function formatDateTime(value: string) {
@@ -2482,23 +2490,20 @@ function AuditsPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePreviewOp
 
 function TagManagementPage() {
   const [query, setQuery] = useState(readTagSearchFromUrl);
+  const [sort, setSort] = useState<TagSort>(readTagSortFromUrl);
   const [tags, setTags] = useState<TagDto[]>([]);
-  const [aliases, setAliases] = useState<TagAliasDto[]>([]);
-  const [aliasInput, setAliasInput] = useState("");
-  const [aliasTagInput, setAliasTagInput] = useState("");
-  const [editingAlias, setEditingAlias] = useState("");
   const [error, setError] = useState("");
 
   async function refreshTagData() {
-    const [nextTags, nextAliases] = await Promise.all([listTags(query), listTagAliases(query)]);
+    const nextTags = await listTags(query, sort);
     setTags(nextTags);
-    setAliases(nextAliases);
     setError("");
   }
 
   useEffect(() => {
     function syncRouteState() {
       setQuery(readTagSearchFromUrl());
+      setSort(readTagSortFromUrl());
     }
 
     window.addEventListener("popstate", syncRouteState);
@@ -2506,139 +2511,56 @@ function TagManagementPage() {
   }, []);
 
   useEffect(() => {
-    updateTagSearchQuery(query);
-  }, [query]);
+    updateTagSearchQuery(query, sort);
+  }, [query, sort]);
 
   useEffect(() => {
     refreshTagData()
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载 tag 失败"));
-  }, [query]);
-
-  async function submitAlias() {
-    const alias = normalizeTagAliasInput(aliasInput);
-    const tag = aliasTagInput.trim();
-    if (!alias || !tag) return;
-    try {
-      await createTagAlias({ alias, tag });
-      if (editingAlias && normalizeTagAliasInput(editingAlias) !== alias) await deleteTagAlias(editingAlias);
-      setAliasInput("");
-      setAliasTagInput("");
-      setEditingAlias("");
-      await refreshTagData();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "保存 alias 失败");
-    }
-  }
-
-  function startEditAlias(row: TagAliasDto) {
-    setAliasInput(row.alias);
-    setAliasTagInput(row.tag);
-    setEditingAlias(row.alias);
-  }
-
-  async function removeAlias(alias: string) {
-    try {
-      await deleteTagAlias(alias);
-      if (editingAlias === alias) {
-        setAliasInput("");
-        setAliasTagInput("");
-        setEditingAlias("");
-      }
-      await refreshTagData();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "删除 alias 失败");
-    }
-  }
+  }, [query, sort]);
 
   return (
     <section className="space-y-4">
       <Card className="p-4">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-subtle-foreground" />
-          <input
-            className="h-9 w-full rounded-md border border-border bg-surface pl-9 pr-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-            placeholder="查找 tag"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </div>
-      </Card>
-      <Card className="space-y-3 p-4">
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="min-w-[220px] flex-1">
-            <span className="mb-1 block text-xs font-medium text-muted-foreground">Alias</span>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative min-w-[260px] flex-1">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-subtle-foreground" />
             <input
-              className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-              placeholder="例如 dt"
-              value={aliasInput}
-              onChange={(event) => setAliasInput(event.target.value)}
+              className="h-9 w-full rounded-md border border-border bg-surface pl-9 pr-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+              placeholder="查找 tag 或 alias"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
             />
-          </label>
-          <label className="min-w-[220px] flex-1">
-            <span className="mb-1 block text-xs font-medium text-muted-foreground">目标 tag</span>
-            <input
-              className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-              placeholder="例如 弔图"
-              value={aliasTagInput}
-              onChange={(event) => setAliasTagInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void submitAlias();
-              }}
-            />
-          </label>
-          <Button disabled={!aliasInput.trim() || !aliasTagInput.trim()} variant="primary" onClick={() => void submitAlias()}>
-            {editingAlias ? "更新 alias" : "创建 alias"}
-          </Button>
-          {editingAlias && (
-            <Button
-              variant="ghost"
-              onClick={() => {
-                setAliasInput("");
-                setAliasTagInput("");
-                setEditingAlias("");
-              }}
-            >
-              取消
-            </Button>
-          )}
+          </div>
+          <SelectField label="排序" value={sort} options={tagSortOptions} onChange={setSort} />
         </div>
       </Card>
       {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
       <Card className="overflow-hidden">
-        <div className="border-b border-border px-4 py-3 text-sm font-semibold">Alias 列表</div>
-        {aliases.map((row) => (
-          <div key={row.alias} className="grid gap-3 border-b border-border px-4 py-3 text-sm last:border-b-0 md:grid-cols-[1fr_1fr_auto] md:items-center">
-            <div className="min-w-0">
-              <div className="truncate font-medium">{row.alias}</div>
-              <div className="mt-1 text-xs text-subtle-foreground">输入别名会解析到目标 tag</div>
-            </div>
-            <div className="min-w-0">
-              <Badge className="border-primary/30 bg-primary-muted text-primary-text">{row.tag}</Badge>
-            </div>
-            <div className="flex gap-2">
-              <Button className="h-8" variant="secondary" onClick={() => startEditAlias(row)}>
-                编辑
-              </Button>
-              <Button className="h-8" variant="danger" onClick={() => void removeAlias(row.alias)}>
-                删除
-              </Button>
-            </div>
-          </div>
-        ))}
-        {aliases.length === 0 && <div className="p-6 text-center text-sm text-muted-foreground">没有找到匹配的 alias。</div>}
-      </Card>
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        <div className="hidden grid-cols-[minmax(140px,1.1fr)_minmax(180px,1.4fr)_90px_150px] gap-3 border-b border-border px-4 py-3 text-xs font-semibold text-muted-foreground md:grid">
+          <span>Tag</span>
+          <span>Alias</span>
+          <span>数量</span>
+          <span>创建时间</span>
+        </div>
         {tags.map((tag) => (
-          <Card key={tag.name} className="flex items-center justify-between p-4">
-            <div>
-              <div className="font-medium">{tag.name}</div>
-              <div className="mt-1 text-xs text-subtle-foreground">正式内容中使用 {tag.count} 次</div>
+          <div key={tag.name} className="grid gap-3 border-b border-border px-4 py-3 text-sm last:border-b-0 md:grid-cols-[minmax(140px,1.1fr)_minmax(180px,1.4fr)_90px_150px] md:items-center">
+            <div className="min-w-0">
+              <div className="truncate font-medium">{tag.name}</div>
+              <div className="mt-1 text-xs text-subtle-foreground">正式内容 tag</div>
+            </div>
+            <div className="flex min-w-0 flex-wrap gap-1">
+              {(tag.aliases ?? []).map((alias) => (
+                <Badge key={alias} className="border-primary/30 bg-primary-muted text-primary-text">{alias}</Badge>
+              ))}
+              {(tag.aliases ?? []).length === 0 && <span className="text-xs text-subtle-foreground">暂无 alias</span>}
             </div>
             <Badge>{tag.count}</Badge>
-          </Card>
+            <span className="text-xs text-subtle-foreground">{tag.createdAt ? formatDateTime(tag.createdAt) : "--"}</span>
+          </div>
         ))}
-      </div>
-      {tags.length === 0 && <Card className="p-8 text-center text-sm text-muted-foreground">没有找到匹配的 tag。</Card>}
+        {tags.length === 0 && <div className="p-8 text-center text-sm text-muted-foreground">没有找到匹配的 tag。</div>}
+      </Card>
     </section>
   );
 }

@@ -31,15 +31,35 @@ export interface PicImageResultDto {
   existed: boolean;
 }
 
-export interface PicRandomResultDto extends MediaContentDto {
+export interface PicContentItemDto extends MediaContentDto {
   fileMd5?: string;
   fileUrl?: string;
 }
+
+export interface PicRandomResultDto extends PicContentItemDto {}
 
 export interface PicRandomQueryDto {
   tags?: string[];
   tagMode?: "and" | "or";
   type?: MediaType;
+}
+
+export interface PicContentListQueryDto extends PicRandomQueryDto {
+  page?: number;
+  size?: number;
+}
+
+export interface LikeMediaContentDto {
+  source: string;
+  date?: string;
+}
+
+export interface LikeMediaContentResultDto {
+  contentId: string;
+  source: string;
+  likeDate: string;
+  liked: boolean;
+  likeCount: number;
 }
 
 export interface UpdateMediaTagsDto {

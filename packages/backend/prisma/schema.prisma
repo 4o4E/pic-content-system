@@ -79,10 +79,28 @@ model MediaContent {
   updatedAt  DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   sources SourceBinding[]
+  likes   ContentLike[]
 
   @@index([type])
   @@index([auditState])
+  @@index([auditState, createdAt])
+  @@index([auditState, likeCount, createdAt])
   @@map("media_content")
+}
+
+model ContentLike {
+  id        String       @id @db.VarChar(16)
+  contentId String       @map("content_id") @db.VarChar(16)
+  source    String
+  likeDate  DateTime     @map("like_date") @db.Date
+  createdAt DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  content MediaContent @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@unique([contentId, source, likeDate])
+  @@index([contentId, likeDate])
+  @@index([source, likeDate])
+  @@map("content_like")
 }
 
 model SourceBinding {

@@ -17,6 +17,7 @@ async function cleanDatabase() {
   await prisma.auditEvent.deleteMany();
   await prisma.mediaAsset.deleteMany();
   await prisma.sourceBinding.deleteMany();
+  await prisma.contentLike.deleteMany();
   await prisma.contentTag.deleteMany();
   await prisma.mediaContent.deleteMany();
   await prisma.mediaFile.deleteMany();
@@ -124,5 +125,81 @@ describe("pic routes db", () => {
     await expect(prisma.mediaFile.count()).resolves.toBe(1);
     await expect(prisma.sourceBinding.count()).resolves.toBe(1);
     await expect(prisma.contentTag.count()).resolves.toBe(2);
+  });
+
+  it("点赞会按来源和日期去重，并让最热接口按累计点赞排序", async () => {
+    const app = await createApp({
+      port: 0,
+      filesDir,
+      accessToken: "test-token",
+      frontendDistDir: "not-exists",
+      maxRequestBodyBytes: 1024 * 1024,
+    });
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/pic/images",
+      headers: { authorization: "Bearer test-token" },
+      payload: {
+        contentBase64: pngBuffer(30, 10).toString("base64"),
+        tags: ["热图"],
+        auditRequired: false,
+      },
+    });
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/pic/images",
+      headers: { authorization: "Bearer test-token" },
+      payload: {
+        contentBase64: pngBuffer(31, 10).toString("base64"),
+        tags: ["热图"],
+        auditRequired: false,
+      },
+    });
+    const firstContentId = first.json().data.content.id;
+    const secondContentId = second.json().data.content.id;
+
+    const likeA = await app.inject({
+      method: "POST",
+      url: `/api/pic/contents/${firstContentId}/likes`,
+      headers: { authorization: "Bearer test-token" },
+      payload: { source: "qq:group:user", date: "2026-05-26" },
+    });
+    const duplicateLike = await app.inject({
+      method: "POST",
+      url: `/api/pic/contents/${firstContentId}/likes`,
+      headers: { authorization: "Bearer test-token" },
+      payload: { source: "qq:group:user", date: "2026-05-26" },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/pic/contents/${secondContentId}/likes`,
+      headers: { authorization: "Bearer test-token" },
+      payload: { source: "qq:group:user", date: "2026-05-26" },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/pic/contents/${secondContentId}/likes`,
+      headers: { authorization: "Bearer test-token" },
+      payload: { source: "qq:group:user", date: "2026-05-27" },
+    });
+
+    const hot = await app.inject({
+      method: "GET",
+      url: "/api/pic/hot?tags=热图",
+      headers: { authorization: "Bearer test-token" },
+    });
+    await app.close();
+
+    expect(likeA.statusCode).toBe(200);
+    expect(likeA.json()).toMatchObject({ data: { liked: true, likeCount: 1 } });
+    expect(duplicateLike.statusCode).toBe(200);
+    expect(duplicateLike.json()).toMatchObject({ data: { liked: false, likeCount: 1 } });
+    await expect(prisma.contentLike.count({ where: { contentId: firstContentId } })).resolves.toBe(1);
+    expect(hot.statusCode).toBe(200);
+    expect(hot.json().data.data.map((item: { id: string; likeCount: number }) => [item.id, item.likeCount])).toEqual([
+      [secondContentId, 2],
+      [firstContentId, 1],
+    ]);
   });
 });

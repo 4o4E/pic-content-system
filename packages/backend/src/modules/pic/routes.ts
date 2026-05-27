@@ -1,5 +1,17 @@
 import type { FastifyInstance } from "fastify";
-import type { ApiResp, ImportPicImageDto, MediaElement, MediaType, PicImageResultDto, PicRandomResultDto, SourceBindingDto } from "@pic/shared";
+import type {
+  ApiResp,
+  ImportPicImageDto,
+  LikeMediaContentDto,
+  LikeMediaContentResultDto,
+  MediaElement,
+  MediaType,
+  PageResp,
+  PicContentItemDto,
+  PicImageResultDto,
+  PicRandomResultDto,
+  SourceBindingDto,
+} from "@pic/shared";
 import type { Prisma } from "@prisma/client";
 import type { AppConfig } from "../../config/env.js";
 import { prisma } from "../../db/prisma.js";
@@ -31,7 +43,96 @@ function firstImageMd5(elements: MediaElement[]) {
   return elements.find((element) => element.type === "image")?.id;
 }
 
+function toPicContentItemDto(content: Parameters<typeof toMediaContentDto>[0]): PicContentItemDto {
+  const dto = toMediaContentDto(content);
+  const fileMd5 = firstImageMd5(dto.elements);
+  return {
+    ...dto,
+    fileMd5,
+    fileUrl: fileMd5 ? `/api/files/${fileMd5}` : undefined,
+  };
+}
+
+function parsePage(value: string | undefined) {
+  const parsed = Number(value ?? 1);
+  return Number.isFinite(parsed) ? Math.max(Math.trunc(parsed), 1) : 1;
+}
+
+function parseSize(value: string | undefined) {
+  const parsed = Number(value ?? 20);
+  return Number.isFinite(parsed) ? Math.min(Math.max(Math.trunc(parsed), 1), 100) : 20;
+}
+
+function shanghaiDateText(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function parseLikeDate(value: string | undefined) {
+  const text = value?.trim() || shanghaiDateText();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return undefined;
+  const date = new Date(`${text}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== text) return undefined;
+  return { text, date };
+}
+
+type PicListQuery = {
+  tags?: string;
+  tagMode?: "and" | "or";
+  type?: MediaType;
+  page?: string;
+  size?: string;
+};
+
+async function listPicContents(query: PicListQuery, orderBy: Prisma.MediaContentOrderByWithRelationInput[]) {
+  const page = parsePage(query.page);
+  const size = parseSize(query.size);
+  const tags = await resolveTagAliases(prisma, parseTags(query.tags));
+  const tagMode = query.tagMode ?? "and";
+  const type = query.type ?? "image";
+  const where: Prisma.MediaContentWhereInput = {
+    type,
+    auditState: "approved",
+  };
+  if (tags.length > 0) where.tags = tagMode === "or" ? { hasSome: tags } : { hasEvery: tags };
+
+  const [total, rows] = await Promise.all([
+    prisma.mediaContent.count({ where }),
+    prisma.mediaContent.findMany({
+      where,
+      include: { sources: true },
+      orderBy,
+      skip: (page - 1) * size,
+      take: size,
+    }),
+  ]);
+
+  return { total, data: rows.map(toPicContentItemDto) };
+}
+
 export async function registerPicRoutes(app: FastifyInstance, config: AppConfig) {
+  app.get<{
+    Querystring: PicListQuery;
+    Reply: ApiResp<PageResp<PicContentItemDto>>;
+  }>("/api/pic/latest", async (request) => {
+    const data = await listPicContents(request.query, [{ createdAt: "desc" }]);
+    return { success: true, message: "ok", data };
+  });
+
+  app.get<{
+    Querystring: PicListQuery;
+    Reply: ApiResp<PageResp<PicContentItemDto>>;
+  }>("/api/pic/hot", async (request) => {
+    const data = await listPicContents(request.query, [{ likeCount: "desc" }, { createdAt: "desc" }]);
+    return { success: true, message: "ok", data };
+  });
+
   app.get<{
     Querystring: { tags?: string; tagMode?: "and" | "or"; type?: MediaType };
     Reply: ApiResp<PicRandomResultDto>;
@@ -56,15 +157,61 @@ export async function registerPicRoutes(app: FastifyInstance, config: AppConfig)
     });
     if (!content) return reply.code(404).send({ success: false, message: "没有找到符合条件的图片" });
 
-    const dto = toMediaContentDto(content);
-    const fileMd5 = firstImageMd5(dto.elements);
+    return {
+      success: true,
+      message: "ok",
+      data: toPicContentItemDto(content),
+    };
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: LikeMediaContentDto;
+    Reply: ApiResp<LikeMediaContentResultDto>;
+  }>("/api/pic/contents/:id/likes", async (request, reply) => {
+    const source = request.body?.source?.trim();
+    if (!source) return reply.code(400).send({ success: false, message: "点赞来源不能为空" });
+    const likeDate = parseLikeDate(request.body?.date);
+    if (!likeDate) return reply.code(400).send({ success: false, message: "点赞日期必须是 YYYY-MM-DD 格式" });
+
+    const result = await prisma.$transaction(async (tx) => {
+      const content = await tx.mediaContent.findFirst({
+        where: { id: request.params.id, auditState: "approved" },
+        select: { id: true, likeCount: true },
+      });
+      if (!content) return undefined;
+
+      const created = await tx.contentLike.createMany({
+        data: {
+          id: nextSnowflakeId(),
+          contentId: content.id,
+          source,
+          likeDate: likeDate.date,
+        },
+        skipDuplicates: true,
+      });
+      if (created.count === 0) {
+        return { liked: false, likeCount: Number(content.likeCount) };
+      }
+
+      const updated = await tx.mediaContent.update({
+        where: { id: content.id },
+        data: { likeCount: { increment: 1 } },
+        select: { likeCount: true },
+      });
+      return { liked: true, likeCount: Number(updated.likeCount) };
+    });
+
+    if (!result) return reply.code(404).send({ success: false, message: "内容不存在或未通过审核" });
     return {
       success: true,
       message: "ok",
       data: {
-        ...dto,
-        fileMd5,
-        fileUrl: fileMd5 ? `/api/files/${fileMd5}` : undefined,
+        contentId: request.params.id,
+        source,
+        likeDate: likeDate.text,
+        liked: result.liked,
+        likeCount: result.likeCount,
       },
     };
   });

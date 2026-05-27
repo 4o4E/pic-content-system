@@ -8,10 +8,14 @@ const mockPrisma = vi.hoisted(() => ({
   },
   mediaContent: {
     count: vi.fn(),
+    findFirst: vi.fn(),
     findMany: vi.fn(),
     findUnique: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
+  },
+  contentLike: {
+    createMany: vi.fn(),
   },
   mediaAsset: {
     create: vi.fn(),
@@ -95,6 +99,7 @@ describe("pic routes", () => {
   afterEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
+    vi.useRealTimers();
   });
 
   it("随机取图会解析 tag alias 并返回文件 MD5", async () => {
@@ -122,6 +127,80 @@ describe("pic routes", () => {
     });
   });
 
+  it("最新内容接口按创建时间倒序返回已审核内容", async () => {
+    mockPrisma.tagAlias.findMany.mockResolvedValue([]);
+    mockPrisma.mediaContent.count.mockResolvedValue(1);
+    mockPrisma.mediaContent.findMany.mockResolvedValue([contentRow({ id: "latest-content" })]);
+    const app = await createPicOnlyApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/pic/latest?size=5",
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ success: true, data: { total: 1, data: [{ id: "latest-content" }] } });
+    expect(mockPrisma.mediaContent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { type: "image", auditState: "approved" },
+        orderBy: [{ createdAt: "desc" }],
+        take: 5,
+      }),
+    );
+  });
+
+  it("最新内容接口支持 tag alias、OR 筛选和分页", async () => {
+    mockPrisma.tagAlias.findMany.mockResolvedValue([{ alias: "dt", tag: "弔图" }]);
+    mockPrisma.mediaContent.count.mockResolvedValue(3);
+    mockPrisma.mediaContent.findMany.mockResolvedValue([contentRow({ id: "latest-page-2" })]);
+    const app = await createPicOnlyApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/pic/latest?tags=DT&tagMode=or&page=2&size=5",
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ success: true, data: { total: 3, data: [{ id: "latest-page-2" }] } });
+    expect(mockPrisma.mediaContent.count).toHaveBeenCalledWith({
+      where: {
+        type: "image",
+        auditState: "approved",
+        tags: { hasSome: ["弔图"] },
+      },
+    });
+    expect(mockPrisma.mediaContent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skip: 5,
+        take: 5,
+      }),
+    );
+  });
+
+  it("最热内容接口按点赞数倒序返回已审核内容", async () => {
+    mockPrisma.tagAlias.findMany.mockResolvedValue([]);
+    mockPrisma.mediaContent.count.mockResolvedValue(1);
+    mockPrisma.mediaContent.findMany.mockResolvedValue([contentRow({ id: "hot-content", likeCount: BigInt(7) })]);
+    const app = await createPicOnlyApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/pic/hot",
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ success: true, data: { total: 1, data: [{ id: "hot-content", likeCount: 7 }] } });
+    expect(mockPrisma.mediaContent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { type: "image", auditState: "approved" },
+        orderBy: [{ likeCount: "desc" }, { createdAt: "desc" }],
+      }),
+    );
+  });
+
   it("随机取图找不到内容时返回 404", async () => {
     mockPrisma.tagAlias.findMany.mockResolvedValue([]);
     mockPrisma.mediaContent.count.mockResolvedValue(0);
@@ -135,6 +214,173 @@ describe("pic routes", () => {
 
     expect(response.statusCode).toBe(404);
     expect(response.json()).toMatchObject({ success: false });
+  });
+
+  it("点赞接口按内容、来源和日期去重并只在首次点赞时递增计数", async () => {
+    const tx = {
+      mediaContent: {
+        findFirst: vi.fn().mockResolvedValue({ id: "content-id", likeCount: BigInt(2) }),
+        update: vi.fn().mockResolvedValue({ likeCount: BigInt(3) }),
+      },
+      contentLike: {
+        createMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
+    const app = await createPicOnlyApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/pic/contents/content-id/likes",
+      payload: { source: "qq:g:u", date: "2026-05-26" },
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      success: true,
+      data: { contentId: "content-id", source: "qq:g:u", likeDate: "2026-05-26", liked: true, likeCount: 3 },
+    });
+    expect(tx.contentLike.createMany).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        contentId: "content-id",
+        source: "qq:g:u",
+        likeDate: new Date("2026-05-26T00:00:00.000Z"),
+      }),
+      skipDuplicates: true,
+    });
+    expect(tx.mediaContent.update).toHaveBeenCalledWith({
+      where: { id: "content-id" },
+      data: { likeCount: { increment: 1 } },
+      select: { likeCount: true },
+    });
+  });
+
+  it("重复点赞不会递增点赞计数", async () => {
+    const tx = {
+      mediaContent: {
+        findFirst: vi.fn().mockResolvedValue({ id: "content-id", likeCount: BigInt(3) }),
+        update: vi.fn(),
+      },
+      contentLike: {
+        createMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+    };
+    mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
+    const app = await createPicOnlyApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/pic/contents/content-id/likes",
+      payload: { source: "qq:g:u", date: "2026-05-26" },
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ success: true, data: { liked: false, likeCount: 3 } });
+    expect(tx.mediaContent.update).not.toHaveBeenCalled();
+  });
+
+  it("点赞来源为空时返回 400 且不写入数据库", async () => {
+    const app = await createPicOnlyApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/pic/contents/content-id/likes",
+      payload: { source: "   ", date: "2026-05-26" },
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ success: false, message: "点赞来源不能为空" });
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("点赞日期格式错误时返回 400 且不写入数据库", async () => {
+    const app = await createPicOnlyApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/pic/contents/content-id/likes",
+      payload: { source: "qq:g:u", date: "2026-13-01" },
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ success: false, message: "点赞日期必须是 YYYY-MM-DD 格式" });
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("点赞内容不存在或未通过审核时返回 404 且不写入点赞明细", async () => {
+    const tx = {
+      mediaContent: {
+        findFirst: vi.fn().mockResolvedValue(undefined),
+        update: vi.fn(),
+      },
+      contentLike: {
+        createMany: vi.fn(),
+      },
+    };
+    mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
+    const app = await createPicOnlyApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/pic/contents/content-id/likes",
+      payload: { source: "qq:g:u", date: "2026-05-26" },
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ success: false, message: "内容不存在或未通过审核" });
+    expect(tx.mediaContent.findFirst).toHaveBeenCalledWith({
+      where: { id: "content-id", auditState: "approved" },
+      select: { id: true, likeCount: true },
+    });
+    expect(tx.contentLike.createMany).not.toHaveBeenCalled();
+    expect(tx.mediaContent.update).not.toHaveBeenCalled();
+  });
+
+  it("点赞日期缺省时按 Asia/Shanghai 当天记录", async () => {
+    const expectedDate = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    })
+      .formatToParts(new Date())
+      .reduce<Record<string, string>>((acc, part) => {
+        if (part.type !== "literal") acc[part.type] = part.value;
+        return acc;
+      }, {});
+    const expectedDateText = `${expectedDate.year}-${expectedDate.month}-${expectedDate.day}`;
+    const tx = {
+      mediaContent: {
+        findFirst: vi.fn().mockResolvedValue({ id: "content-id", likeCount: BigInt(0) }),
+        update: vi.fn().mockResolvedValue({ likeCount: BigInt(1) }),
+      },
+      contentLike: {
+        createMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
+    const app = await createPicOnlyApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/pic/contents/content-id/likes",
+      payload: { source: "qq:g:u" },
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ success: true, data: { likeDate: expectedDateText, liked: true, likeCount: 1 } });
+    expect(tx.contentLike.createMany).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        likeDate: new Date(`${expectedDateText}T00:00:00.000Z`),
+      }),
+      skipDuplicates: true,
+    });
   });
 
   it("导入带 tags 且 auditRequired=true 的图片会创建 pending 内容", async () => {

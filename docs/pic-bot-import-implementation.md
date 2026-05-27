@@ -69,6 +69,14 @@
 - 前端新增 `/audits` 审批管理页，支持筛选、预览、查看 QQ 来源资料并执行审批动作。
 - 标签管理页补充 tag alias 列表、创建/更新和删除入口。
 
+## Bot 取图与点赞接口
+
+- `GET /api/pic/latest` 返回最新已审批内容，默认 `type=image`，支持 `tags`、`tagMode=and|or`、`type`、`page`、`size`。
+- `GET /api/pic/hot` 返回最热已审批内容，筛选参数同最新接口，排序为 `likeCount desc, createdAt desc`。
+- `POST /api/pic/contents/:id/likes` 给内容点赞，请求体为 `{ "source": "qq:group:user", "date": "2026-05-26" }`。
+- 点赞来源是调用方拼出的字符串，后端不解析平台语义；`date` 省略时按 `Asia/Shanghai` 当天补齐。
+- 点赞明细按 `contentId + source + date` 去重，重复点赞不会递增内容的 `likeCount`。
+
 ## ID 与日志格式
 
 - 新业务数据 ID 由后端应用层生成，不再依赖数据库 `gen_random_uuid()`。

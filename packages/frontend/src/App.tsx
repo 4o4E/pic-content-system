@@ -19,13 +19,7 @@ import {
   Archive,
   CheckCircle2,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   ChevronUp,
-  ChevronsDown,
-  ChevronsLeft,
-  ChevronsRight,
-  ChevronsUp,
   Clock3,
   Combine,
   Database,
@@ -53,6 +47,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Pagination } from "@/components/ui/pagination";
 import { createImagePreviewState, emptyImagePreviewState, ImagePreviewViewer, type ImagePreviewGroup, type ImagePreviewItem } from "@/components/media/image-preview";
 import { cn } from "@/lib/utils";
 import {
@@ -98,6 +93,12 @@ type LibrarySort = "time_desc" | "time_asc" | "like_desc" | "like_asc";
 type PicPreviewMode = "latest" | "hot";
 type PicViewMode = "display" | "raw";
 type LibraryPaginationPlacement = "top" | "side" | "bottom";
+type TagRouteState = {
+  query: string;
+  sort: TagSort;
+  page: number;
+  size: number;
+};
 type ImagePreviewOpener = (elements: MediaElement[], activeElement: MediaElement, groups?: ImagePreviewGroup[], groupIndex?: number) => void;
 type LibraryRouteState = {
   query: string;
@@ -176,6 +177,8 @@ const defaultLibraryPage = 1;
 const defaultLibraryPageSize = 100;
 const defaultLibrarySort: LibrarySort = "time_desc";
 const defaultTagSort: TagSort = "count_desc";
+const defaultTagPage = 1;
+const defaultTagPageSize = 100;
 const libraryPageSizeOptions = [50, 100, 200];
 
 const pagePaths: Record<PageKey, string> = {
@@ -294,6 +297,11 @@ function libraryPageSizeFromParam(value: string | null) {
   return libraryPageSizeOptions.includes(parsed) ? parsed : defaultLibraryPageSize;
 }
 
+function tagPageSizeFromParam(value: string | null) {
+  const parsed = numberFromParam(value, defaultTagPageSize);
+  return libraryPageSizeOptions.includes(parsed) ? parsed : defaultTagPageSize;
+}
+
 function setSearchParam(params: URLSearchParams, key: string, value: string | undefined) {
   if (value) params.set(key, value);
   else params.delete(key);
@@ -355,19 +363,23 @@ function updateLibraryQuery(state: LibraryRouteState) {
   });
 }
 
-function readTagSearchFromUrl() {
-  return new URLSearchParams(window.location.search).get("q") ?? "";
+function readTagStateFromUrl(): TagRouteState {
+  const params = new URLSearchParams(window.location.search);
+  const sort = params.get("sort");
+  return {
+    query: params.get("q") ?? "",
+    sort: tagSortOptions.some((option) => option.value === sort) ? (sort as TagSort) : defaultTagSort,
+    page: numberFromParam(params.get("page"), defaultTagPage),
+    size: tagPageSizeFromParam(params.get("size")),
+  };
 }
 
-function readTagSortFromUrl() {
-  const sort = new URLSearchParams(window.location.search).get("sort");
-  return tagSortOptions.some((option) => option.value === sort) ? (sort as TagSort) : defaultTagSort;
-}
-
-function updateTagSearchQuery(query: string, sort: TagSort) {
+function updateTagSearchQuery(state: TagRouteState) {
   replaceRouteQuery(pagePaths.tags, {
-    q: query.trim() || undefined,
-    sort: sort === defaultTagSort ? undefined : sort,
+    q: state.query.trim() || undefined,
+    sort: state.sort === defaultTagSort ? undefined : state.sort,
+    page: state.page === defaultTagPage ? undefined : String(state.page),
+    size: state.size === defaultTagPageSize ? undefined : String(state.size),
   });
 }
 
@@ -493,6 +505,7 @@ function TagSelectInput({
   suggestions: staticSuggestions,
   excludeTags = [],
   allowCreate = true,
+  maxTags,
 }: {
   label: string;
   selectedTags: string[];
@@ -503,6 +516,7 @@ function TagSelectInput({
   suggestions?: TagDto[];
   excludeTags?: string[];
   allowCreate?: boolean;
+  maxTags?: number;
 }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
@@ -546,7 +560,8 @@ function TagSelectInput({
       .map((tag) => tag.trim())
       .filter((tag) => tag && !excludedTagSet.has(tag))
       .filter((tag) => !suggestionNameSet || suggestionNameSet.has(tag));
-    const next = Array.from(new Set([...selectedTags, ...normalizedTags]));
+    const mergedTags = Array.from(new Set([...selectedTags, ...normalizedTags]));
+    const next = maxTags ? mergedTags.slice(-maxTags) : mergedTags;
     onChange(next);
     setQuery("");
     setOpen(true);
@@ -1511,10 +1526,6 @@ function ContentLibraryPage({
     ? tagSuggestions.filter((tag) => !selectedTags.includes(tag.name)).slice(0, 8)
     : [];
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const visiblePages = Array.from({ length: Math.min(5, totalPages) }, (_, index) => {
-    const start = Math.min(Math.max(currentPage - 2, 1), Math.max(totalPages - 4, 1));
-    return start + index;
-  });
 
   useEffect(() => {
     listTags()
@@ -1769,88 +1780,19 @@ function ContentLibraryPage({
   }
 
   function renderPagination(placement: LibraryPaginationPlacement) {
-    const vertical = placement === "side";
     return (
-      <div
-        aria-label="内容库分页"
-        className={cn(
-          "border border-border bg-surface shadow-sm",
-          vertical
-            ? "hidden xl:fixed xl:right-4 xl:top-[4.75rem] xl:z-30 xl:flex xl:w-14 xl:flex-col xl:items-center xl:gap-2 xl:rounded-md xl:p-1"
-            : "flex flex-col gap-3 rounded-md p-3 sm:flex-row sm:items-center sm:justify-between",
-        )}
-      >
-        <div className={cn("flex flex-wrap items-center justify-center gap-1", vertical ? "flex-col" : "sm:justify-start")}>
-          <Button
-            className="h-8 w-8 px-0"
-            disabled={currentPage <= 1}
-            variant="secondary"
-            aria-label="首页"
-            onClick={() => setCurrentPage(1)}
-          >
-            {vertical ? <ChevronsUp className="h-4 w-4" /> : <ChevronsLeft className="h-4 w-4" />}
-          </Button>
-          <Button
-            className="h-8 w-8 px-0"
-            disabled={currentPage <= 1}
-            variant="secondary"
-            aria-label="上一页"
-            onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
-          >
-            {vertical ? <ChevronUp className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
-          </Button>
-          {visiblePages.map((page) => (
-            <Button
-              key={page}
-              className="h-8 w-8 px-0 text-xs"
-              variant={page === currentPage ? "primary" : "secondary"}
-              aria-label={`第 ${page} 页`}
-              onClick={() => setCurrentPage(page)}
-            >
-              {page}
-            </Button>
-          ))}
-          <Button
-            className="h-8 w-8 px-0"
-            disabled={currentPage >= totalPages}
-            variant="secondary"
-            aria-label="下一页"
-            onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
-          >
-            {vertical ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-          </Button>
-          <Button
-            className="h-8 w-8 px-0"
-            disabled={currentPage >= totalPages}
-            variant="secondary"
-            aria-label="尾页"
-            onClick={() => setCurrentPage(totalPages)}
-          >
-            {vertical ? <ChevronsDown className="h-4 w-4" /> : <ChevronsRight className="h-4 w-4" />}
-          </Button>
-          {!vertical && (
-            <span className="ml-0 text-xs text-subtle-foreground sm:ml-2">
-              第 {currentPage} / {totalPages} 页
-            </span>
-          )}
-        </div>
-        <div className={cn("flex gap-2", vertical ? "flex-col items-center" : "flex-col sm:flex-row sm:items-center")}>
-          {!vertical && <span className="text-center text-xs text-muted-foreground sm:text-left">每页数量</span>}
-          <div className={cn("flex rounded-md border border-border bg-surface-muted p-1", vertical ? "flex-col" : "justify-center sm:justify-start")}>
-            {libraryPageSizeOptions.map((size) => (
-              <Button
-                key={size}
-                className={cn("h-8 text-xs", vertical ? "w-10 px-0" : "px-3")}
-                variant={pageSize === size ? "primary" : "ghost"}
-                aria-label={`每页 ${size} 条`}
-                onClick={() => changePageSize(size)}
-              >
-                {size}
-              </Button>
-            ))}
-          </div>
-        </div>
-      </div>
+      <Pagination
+        ariaLabel="内容库分页"
+        currentPage={currentPage}
+        totalPages={totalPages}
+        pageSize={pageSize}
+        pageSizeOptions={libraryPageSizeOptions}
+        variant={placement === "side" ? "side" : "horizontal"}
+        totalItems={total}
+        itemLabel="条内容"
+        onPageChange={setCurrentPage}
+        onPageSizeChange={changePageSize}
+      />
     );
   }
 
@@ -2494,29 +2436,196 @@ function AuditsPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePreviewOp
   );
 }
 
-function TagManagementPage() {
-  const [query, setQuery] = useState(readTagSearchFromUrl);
-  const [sort, setSort] = useState<TagSort>(readTagSortFromUrl);
-  const [tags, setTags] = useState<TagDto[]>([]);
-  const [tagInput, setTagInput] = useState("");
-  const [tagActionSource, setTagActionSource] = useState("");
-  const [tagActionTarget, setTagActionTarget] = useState("");
+function TagEditModal({ tag, onClose, onSaved }: { tag: TagDto; onClose: () => void; onSaved: () => Promise<void> }) {
+  const [renameInput, setRenameInput] = useState(tag.name);
   const [aliasInput, setAliasInput] = useState("");
-  const [aliasTagInput, setAliasTagInput] = useState("");
   const [editingAlias, setEditingAlias] = useState("");
+  const [aliases, setAliases] = useState<string[]>(tag.aliases ?? []);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setRenameInput(tag.name);
+    setAliasInput("");
+    setEditingAlias("");
+    setAliases(tag.aliases ?? []);
+    setError("");
+  }, [tag]);
+
+  async function submitRename() {
+    const to = parseTagInput(renameInput)[0];
+    if (!to || to === tag.name) return;
+    try {
+      await renameTag({ from: tag.name, to });
+      await onSaved();
+      onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "重命名 tag 失败");
+    }
+  }
+
+  async function submitAlias() {
+    const alias = aliasInput.trim().toLowerCase();
+    if (!alias) return;
+    try {
+      await createTagAlias({ alias, tag: tag.name });
+      if (editingAlias && editingAlias !== alias) await deleteTagAlias(editingAlias);
+      setAliases((current) => Array.from(new Set([...current.filter((item) => item !== editingAlias), alias])).sort());
+      setAliasInput("");
+      setEditingAlias("");
+      await onSaved();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "保存 alias 失败");
+    }
+  }
+
+  async function removeAlias(alias: string) {
+    try {
+      await deleteTagAlias(alias);
+      setAliases((current) => current.filter((item) => item !== alias));
+      if (editingAlias === alias) {
+        setAliasInput("");
+        setEditingAlias("");
+      }
+      await onSaved();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "删除 alias 失败");
+    }
+  }
+
+  return (
+    <Modal title="编辑 tag" subtitle={tag.name} closeLabel="关闭 tag 编辑" maxWidth="max-w-3xl" onClose={onClose}>
+      <div className="space-y-4 overflow-y-auto p-4">
+        <Card className="space-y-3 p-4">
+          <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-muted-foreground">Tag 名称</span>
+              <input
+                className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                value={renameInput}
+                onChange={(event) => setRenameInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void submitRename();
+                }}
+              />
+            </label>
+            <Button className="h-9" disabled={!renameInput.trim() || parseTagInput(renameInput)[0] === tag.name} variant="primary" onClick={() => void submitRename()}>
+              重命名
+            </Button>
+          </div>
+        </Card>
+
+        <Card className="space-y-3 p-4">
+          <div className="grid gap-3 md:grid-cols-[1fr_auto_auto] md:items-end">
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-muted-foreground">Alias</span>
+              <input
+                className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                placeholder="例如 dt"
+                value={aliasInput}
+                onChange={(event) => setAliasInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void submitAlias();
+                }}
+              />
+            </label>
+            <Button className="h-9" disabled={!aliasInput.trim()} variant="primary" onClick={() => void submitAlias()}>
+              {editingAlias ? "更新 alias" : "创建 alias"}
+            </Button>
+            {editingAlias && (
+              <Button
+                className="h-9"
+                variant="ghost"
+                onClick={() => {
+                  setAliasInput("");
+                  setEditingAlias("");
+                }}
+              >
+                取消
+              </Button>
+            )}
+          </div>
+          <div className="overflow-hidden rounded-md border border-border">
+            <div className="grid grid-cols-[minmax(0,1fr)_120px] gap-3 border-b border-border bg-surface-muted px-3 py-2 text-xs font-semibold text-muted-foreground">
+              <span>Alias</span>
+              <span className="text-right">操作</span>
+            </div>
+            {aliases.map((alias) => (
+              <div key={alias} className="grid grid-cols-[minmax(0,1fr)_120px] gap-3 border-b border-border px-3 py-2 text-sm last:border-b-0">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="truncate font-medium">{alias}</span>
+                  {editingAlias === alias && <span className="shrink-0 text-xs text-primary-text">正在编辑</span>}
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    className="text-primary-text/80 hover:text-primary-text"
+                    onClick={() => {
+                      setAliasInput(alias);
+                      setEditingAlias(alias);
+                    }}
+                  >
+                    编辑
+                  </button>
+                  <button type="button" className="text-red-600 hover:text-red-500 dark:text-red-400" onClick={() => void removeAlias(alias)}>
+                    删除
+                  </button>
+                </div>
+              </div>
+            ))}
+            {aliases.length === 0 && <div className="px-3 py-4 text-sm text-subtle-foreground">暂无 alias</div>}
+          </div>
+        </Card>
+        {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
+      </div>
+    </Modal>
+  );
+}
+
+function TagManagementPage() {
+  const initialRouteState = readTagStateFromUrl();
+  const [query, setQuery] = useState(initialRouteState.query);
+  const [sort, setSort] = useState<TagSort>(initialRouteState.sort);
+  const [currentPage, setCurrentPage] = useState(initialRouteState.page);
+  const [pageSize, setPageSize] = useState(initialRouteState.size);
+  const [tags, setTags] = useState<TagDto[]>([]);
+  const [tagsLoaded, setTagsLoaded] = useState(false);
+  const [tagInput, setTagInput] = useState("");
+  const [createTagExists, setCreateTagExists] = useState(false);
+  const [createTagChecking, setCreateTagChecking] = useState(false);
+  const [mergeSourceTags, setMergeSourceTags] = useState<string[]>([]);
+  const [mergeTargetTags, setMergeTargetTags] = useState<string[]>([]);
+  const [editingTag, setEditingTag] = useState<TagDto | null>(null);
+  const [showSidePagination, setShowSidePagination] = useState(false);
   const [pendingDeleteTag, setPendingDeleteTag] = useState("");
   const [error, setError] = useState("");
+  const topPaginationRef = useRef<HTMLDivElement | null>(null);
+  const bottomPaginationRef = useRef<HTMLDivElement | null>(null);
+  const topPaginationVisibleRef = useRef(true);
+  const bottomPaginationVisibleRef = useRef(false);
+
+  const createTagName = parseTagInput(tagInput)[0] ?? "";
+  const canCreateTag = Boolean(createTagName) && !createTagChecking && !createTagExists;
+  const mergeSource = mergeSourceTags[0];
+  const mergeTarget = mergeTargetTags[0];
+  const totalPages = Math.max(1, Math.ceil(tags.length / pageSize));
+  const pageStart = (currentPage - 1) * pageSize;
+  const pagedTags = tags.slice(pageStart, pageStart + pageSize);
 
   async function refreshTagData() {
     const nextTags = await listTags(query, sort);
     setTags(nextTags);
+    setTagsLoaded(true);
+    setEditingTag((current) => (current ? nextTags.find((tag) => tag.name === current.name) ?? current : null));
     setError("");
   }
 
   useEffect(() => {
     function syncRouteState() {
-      setQuery(readTagSearchFromUrl());
-      setSort(readTagSortFromUrl());
+      const next = readTagStateFromUrl();
+      setQuery(next.query);
+      setSort(next.sort);
+      setCurrentPage(next.page);
+      setPageSize(next.size);
     }
 
     window.addEventListener("popstate", syncRouteState);
@@ -2524,41 +2633,76 @@ function TagManagementPage() {
   }, []);
 
   useEffect(() => {
-    updateTagSearchQuery(query, sort);
-  }, [query, sort]);
+    updateTagSearchQuery({ query, sort, page: currentPage, size: pageSize });
+  }, [currentPage, pageSize, query, sort]);
 
   useEffect(() => {
     refreshTagData()
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载 tag 失败"));
   }, [query, sort]);
 
-  function clearTagAction() {
-    setTagActionSource("");
-    setTagActionTarget("");
-  }
+  useEffect(() => {
+    if (tagsLoaded && currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, tagsLoaded, totalPages]);
 
-  function startTagAction(name: string) {
-    setTagActionSource(name);
-    setTagActionTarget(name);
-  }
+  useEffect(() => {
+    const scrollContainer = document.querySelector<HTMLElement>("[data-app-scroll-container]");
+    if (!scrollContainer) return;
+    const topPagination = topPaginationRef.current;
+    const bottomPagination = bottomPaginationRef.current;
+    if (!topPagination || !bottomPagination) return;
 
-  function clearAliasForm() {
-    setAliasInput("");
-    setAliasTagInput("");
-    setEditingAlias("");
-  }
+    function updateSidePagination() {
+      setShowSidePagination(!topPaginationVisibleRef.current && !bottomPaginationVisibleRef.current);
+    }
 
-  function startEditAlias(alias: string, tag: string) {
-    setAliasInput(alias);
-    setAliasTagInput(tag);
-    setEditingAlias(alias);
-  }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.target === topPagination) topPaginationVisibleRef.current = entry.isIntersecting;
+          if (entry.target === bottomPagination) bottomPaginationVisibleRef.current = entry.isIntersecting;
+        }
+        updateSidePagination();
+      },
+      {
+        root: scrollContainer,
+        threshold: 0.01,
+      },
+    );
+
+    observer.observe(topPagination);
+    observer.observe(bottomPagination);
+    updateSidePagination();
+    return () => observer.disconnect();
+  }, [pagedTags.length, currentPage, pageSize]);
+
+  useEffect(() => {
+    if (!createTagName) {
+      setCreateTagExists(false);
+      setCreateTagChecking(false);
+      return;
+    }
+    let ignore = false;
+    setCreateTagChecking(true);
+    listTags(createTagName)
+      .then((rows) => {
+        if (!ignore) setCreateTagExists(rows.some((tag) => tag.name === createTagName));
+      })
+      .catch(() => {
+        if (!ignore) setCreateTagExists(false);
+      })
+      .finally(() => {
+        if (!ignore) setCreateTagChecking(false);
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [createTagName]);
 
   async function submitCreateTag() {
-    const name = parseTagInput(tagInput)[0];
-    if (!name) return;
+    if (!canCreateTag) return;
     try {
-      await createTag({ name });
+      await createTag({ name: createTagName });
       setTagInput("");
       await refreshTagData();
     } catch (cause) {
@@ -2566,26 +2710,12 @@ function TagManagementPage() {
     }
   }
 
-  async function submitRenameTag() {
-    const from = parseTagInput(tagActionSource)[0];
-    const to = parseTagInput(tagActionTarget)[0];
-    if (!from || !to) return;
-    try {
-      await renameTag({ from, to });
-      clearTagAction();
-      await refreshTagData();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "改名 tag 失败");
-    }
-  }
-
   async function submitMergeTag() {
-    const from = parseTagInput(tagActionSource)[0];
-    const to = parseTagInput(tagActionTarget)[0];
-    if (!from || !to) return;
+    if (!mergeSource || !mergeTarget || mergeSource === mergeTarget) return;
     try {
-      await mergeTag({ from, to });
-      clearTagAction();
+      await mergeTag({ from: mergeSource, to: mergeTarget });
+      setMergeSourceTags([]);
+      setMergeTargetTags([]);
       await refreshTagData();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "合并 tag 失败");
@@ -2599,41 +2729,40 @@ function TagManagementPage() {
     }
     try {
       await deleteTag(name);
-      if (tagActionSource === name) clearTagAction();
       setPendingDeleteTag("");
+      setMergeSourceTags((current) => current.filter((tag) => tag !== name));
+      setMergeTargetTags((current) => current.filter((tag) => tag !== name));
       await refreshTagData();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "删除 tag 失败");
     }
   }
 
-  async function submitAlias() {
-    const alias = aliasInput.trim().toLowerCase();
-    const tag = parseTagInput(aliasTagInput)[0];
-    if (!alias || !tag) return;
-    try {
-      await createTagAlias({ alias, tag });
-      if (editingAlias && editingAlias !== alias) await deleteTagAlias(editingAlias);
-      clearAliasForm();
-      await refreshTagData();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "保存 alias 失败");
-    }
+  function changePageSize(size: number) {
+    setPageSize(size);
+    setCurrentPage(defaultTagPage);
   }
 
-  async function removeAlias(alias: string) {
-    try {
-      await deleteTagAlias(alias);
-      if (editingAlias === alias) clearAliasForm();
-      await refreshTagData();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "删除 alias 失败");
-    }
+  function renderPagination(placement: LibraryPaginationPlacement = "top") {
+    return (
+      <Pagination
+        ariaLabel="tag 分页"
+        currentPage={currentPage}
+        totalPages={totalPages}
+        pageSize={pageSize}
+        pageSizeOptions={libraryPageSizeOptions}
+        variant={placement === "side" ? "side" : "horizontal"}
+        totalItems={tags.length}
+        itemLabel="个 tag"
+        onPageChange={setCurrentPage}
+        onPageSizeChange={changePageSize}
+      />
+    );
   }
 
   return (
     <section className="space-y-4">
-      <Card className="p-4">
+      <Card className="p-4 xl:mx-20">
         <div className="flex flex-wrap items-center gap-3">
           <div className="relative min-w-[260px] flex-1">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-subtle-foreground" />
@@ -2641,123 +2770,107 @@ function TagManagementPage() {
               className="h-9 w-full rounded-md border border-border bg-surface pl-9 pr-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
               placeholder="查找 tag 或 alias"
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setCurrentPage(defaultTagPage);
+              }}
             />
           </div>
-          <SelectField label="排序" value={sort} options={tagSortOptions} onChange={setSort} />
+          <SelectField
+            label="排序"
+            value={sort}
+            options={tagSortOptions}
+            onChange={(nextSort) => {
+              setSort(nextSort);
+              setCurrentPage(defaultTagPage);
+            }}
+          />
         </div>
       </Card>
-      <Card className="space-y-3 p-4">
-        <div className="grid gap-3 lg:grid-cols-[minmax(180px,1fr)_auto_minmax(180px,1fr)_minmax(180px,1fr)_auto_auto] lg:items-end">
+      <Card className="flex flex-wrap items-end gap-4 p-4 xl:mx-20">
+        <div className="w-full max-w-sm">
           <label className="block">
             <span className="mb-1 block text-xs font-medium text-muted-foreground">新 tag</span>
-            <input
-              className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-              placeholder="输入 tag"
-              value={tagInput}
-              onChange={(event) => setTagInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void submitCreateTag();
-              }}
-            />
+            <div className="flex">
+              <input
+                className={cn(
+                  "h-9 min-w-0 flex-1 rounded-l-md border border-r-0 bg-surface px-3 text-sm outline-none focus:ring-2",
+                  createTagExists ? "border-red-500/60 focus:border-red-500 focus:ring-red-500/20" : "border-border focus:border-primary focus:ring-primary/20",
+                )}
+                placeholder="输入 tag"
+                value={tagInput}
+                onChange={(event) => setTagInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void submitCreateTag();
+                }}
+              />
+              <Button className="h-9 rounded-l-none" disabled={!canCreateTag} variant="primary" onClick={() => void submitCreateTag()}>
+                <Plus className="h-4 w-4" />
+                创建
+              </Button>
+            </div>
           </label>
-          <Button className="h-9" disabled={!tagInput.trim()} variant="primary" onClick={() => void submitCreateTag()}>
-            <Plus className="h-4 w-4" />
-            创建 tag
-          </Button>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-muted-foreground">来源 tag</span>
-            <input
-              className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-              placeholder="要改名或合并的 tag"
-              value={tagActionSource}
-              onChange={(event) => setTagActionSource(event.target.value)}
-            />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-muted-foreground">目标 tag</span>
-            <input
-              className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-              placeholder="新名称或合并目标"
-              value={tagActionTarget}
-              onChange={(event) => setTagActionTarget(event.target.value)}
-            />
-          </label>
-          <Button className="h-9" disabled={!tagActionSource.trim() || !tagActionTarget.trim()} variant="secondary" onClick={() => void submitRenameTag()}>
-            改名
-          </Button>
-          <Button className="h-9" disabled={!tagActionSource.trim() || !tagActionTarget.trim()} variant="secondary" onClick={() => void submitMergeTag()}>
-            合并
-          </Button>
+          {createTagExists && <div className="mt-1 text-xs text-red-600 dark:text-red-400">tag 已存在</div>}
         </div>
-      </Card>
-      <Card className="space-y-3 p-4">
-        <div className="grid gap-3 lg:grid-cols-[minmax(180px,1fr)_minmax(180px,1fr)_auto_auto] lg:items-end">
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-muted-foreground">Alias</span>
-            <input
-              className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-              placeholder="例如 dt"
-              value={aliasInput}
-              onChange={(event) => setAliasInput(event.target.value)}
-            />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-muted-foreground">目标 tag</span>
-            <input
-              className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-              placeholder="alias 解析到的 tag"
-              value={aliasTagInput}
-              onChange={(event) => setAliasTagInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void submitAlias();
-              }}
-            />
-          </label>
-          <Button className="h-9" disabled={!aliasInput.trim() || !aliasTagInput.trim()} variant="primary" onClick={() => void submitAlias()}>
-            {editingAlias ? "更新 alias" : "创建 alias"}
-          </Button>
-          {editingAlias && (
-            <Button className="h-9" variant="ghost" onClick={clearAliasForm}>
-              取消
-            </Button>
-          )}
-        </div>
+        <div className="hidden h-14 border-l border-border md:block" />
+        <TagSelectInput
+          className="w-full sm:w-60 lg:w-64"
+          label="来源 tag"
+          selectedTags={mergeSourceTags}
+          placeholder="选择要合并的 tag"
+          allowCreate={false}
+          maxTags={1}
+          onChange={setMergeSourceTags}
+        />
+        <TagSelectInput
+          className="w-full sm:w-60 lg:w-64"
+          label="目标 tag"
+          selectedTags={mergeTargetTags}
+          placeholder="选择合并目标 tag"
+          excludeTags={mergeSource ? [mergeSource] : []}
+          allowCreate={false}
+          maxTags={1}
+          onChange={setMergeTargetTags}
+        />
+        <Button className="h-9" disabled={!mergeSource || !mergeTarget || mergeSource === mergeTarget} variant="secondary" onClick={() => void submitMergeTag()}>
+          合并
+        </Button>
       </Card>
       {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
-      <Card className="overflow-hidden">
+      <div ref={topPaginationRef} className="xl:mx-20">{renderPagination("top")}</div>
+      {showSidePagination && renderPagination("side")}
+      <Card className="overflow-hidden xl:mx-20">
         <div className="hidden grid-cols-[minmax(140px,1.1fr)_minmax(180px,1.4fr)_90px_150px_190px] gap-3 border-b border-border px-4 py-3 text-xs font-semibold text-muted-foreground md:grid">
           <span>Tag</span>
           <span>Alias</span>
-          <span>数量</span>
+          <span className="text-right">数量</span>
           <span>创建时间</span>
           <span>操作</span>
         </div>
-        {tags.map((tag) => (
-          <div key={tag.name} className="grid gap-3 border-b border-border px-4 py-3 text-sm last:border-b-0 md:grid-cols-[minmax(140px,1.1fr)_minmax(180px,1.4fr)_90px_150px_190px] md:items-center">
+        {pagedTags.map((tag, index) => (
+          <div
+            key={tag.name}
+            className={cn(
+              "grid gap-3 border-b border-border px-4 py-3 text-sm last:border-b-0 md:grid-cols-[minmax(140px,1.1fr)_minmax(180px,1.4fr)_90px_150px_190px] md:items-center",
+              (pageStart + index) % 2 === 0 ? "bg-surface" : "bg-surface-muted",
+            )}
+          >
             <div className="min-w-0">
               <div className="truncate font-medium">{tag.name}</div>
-              <div className="mt-1 text-xs text-subtle-foreground">正式内容 tag</div>
             </div>
             <div className="flex min-w-0 flex-wrap gap-1">
               {(tag.aliases ?? []).map((alias) => (
-                <span key={alias} className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary-muted px-2 py-0.5 text-xs font-medium text-primary-text">
+                <span key={alias} className="inline-flex rounded-full border border-primary/30 bg-primary-muted px-2 py-0.5 text-xs font-medium text-primary-text">
                   {alias}
-                  <button type="button" className="text-primary-text/80 hover:text-primary-text" onClick={() => startEditAlias(alias, tag.name)}>
-                    编辑
-                  </button>
-                  <button type="button" className="text-red-600 hover:text-red-500 dark:text-red-400" onClick={() => void removeAlias(alias)}>
-                    删除
-                  </button>
                 </span>
               ))}
               {(tag.aliases ?? []).length === 0 && <span className="text-xs text-subtle-foreground">暂无 alias</span>}
             </div>
-            <Badge>{tag.count}</Badge>
+            <span className="text-right font-medium tabular-nums">{tag.count}</span>
             <span className="text-xs text-subtle-foreground">{tag.createdAt ? formatDateTime(tag.createdAt) : "--"}</span>
             <div className="flex flex-wrap gap-2">
-              <Button className="h-8" variant="secondary" onClick={() => startTagAction(tag.name)}>
-                选择
+              <Button className="h-8" variant="secondary" onClick={() => setEditingTag(tag)}>
+                编辑
               </Button>
               <Button className="h-8" variant={pendingDeleteTag === tag.name ? "danger" : "secondary"} onClick={() => void removeTag(tag.name)}>
                 <Trash2 className="h-4 w-4" />
@@ -2766,8 +2879,10 @@ function TagManagementPage() {
             </div>
           </div>
         ))}
-        {tags.length === 0 && <div className="p-8 text-center text-sm text-muted-foreground">没有找到匹配的 tag。</div>}
+        {pagedTags.length === 0 && <div className="p-8 text-center text-sm text-muted-foreground">没有找到匹配的 tag。</div>}
       </Card>
+      <div ref={bottomPaginationRef} className="xl:mx-20">{renderPagination("bottom")}</div>
+      {editingTag && <TagEditModal tag={editingTag} onClose={() => setEditingTag(null)} onSaved={refreshTagData} />}
     </section>
   );
 }

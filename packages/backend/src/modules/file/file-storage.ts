@@ -14,8 +14,12 @@ function storageKeyFor(md5: string, format: string) {
   return path.join("objects", md5.slice(0, 2), md5.slice(2, 4), `${md5}${extension}`).replaceAll(path.sep, "/");
 }
 
-export async function storeMediaFile(tx: Prisma.TransactionClient, config: AppConfig, buffer: Buffer): Promise<StoredFileResult> {
-  const inspection = inspectFileBuffer(buffer);
+export async function storeMediaFile(
+  tx: Prisma.TransactionClient,
+  config: AppConfig,
+  buffer: Buffer,
+  inspection: FileInspection = inspectFileBuffer(buffer),
+): Promise<StoredFileResult> {
   const storageKey = storageKeyFor(inspection.md5, inspection.format);
   const targetDir = path.resolve(process.cwd(), config.filesDir);
   const target = path.resolve(targetDir, storageKey);

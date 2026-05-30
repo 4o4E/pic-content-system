@@ -10,6 +10,18 @@ export interface FileInspection {
   durationSeconds?: number;
 }
 
+export const COMMON_IMAGE_FORMATS = ["png", "jpg", "gif", "webp"] as const;
+
+const COMMON_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+export function commonImageFormatText() {
+  return COMMON_IMAGE_FORMATS.join("、");
+}
+
+export function isCommonImageInspection(inspection: FileInspection) {
+  return COMMON_IMAGE_MIME_TYPES.has(inspection.mimeType) && COMMON_IMAGE_FORMATS.includes(inspection.format as (typeof COMMON_IMAGE_FORMATS)[number]);
+}
+
 function jpegSize(buffer: Buffer) {
   let offset = 2;
   while (offset + 9 < buffer.length) {

@@ -629,7 +629,7 @@ describe("pic routes", () => {
     await app.close();
 
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({ success: false, message: "上传内容不是可识别的图片文件" });
+    expect(response.json()).toMatchObject({ success: false, message: "上传图片仅支持 png、jpg、gif、webp 常见图片格式" });
     expect(mockStoreMediaFile).not.toHaveBeenCalled();
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });

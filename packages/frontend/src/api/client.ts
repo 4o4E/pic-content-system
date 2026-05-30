@@ -12,10 +12,15 @@ import type {
   BatchRestoreMediaContentsToWorkspaceResultDto,
   BatchUpdateMediaTagsDto,
   CreateIngestEventDto,
+  CreateDataExportDto,
   CreateMediaAssetDto,
   CreateMediaContentDto,
   CreateMediaFileDto,
+  DataExportDetailDto,
+  DataExportListItemDto,
+  DataImportResultDto,
   IngestEventDto,
+  ImportDataExportDto,
   LikeMediaContentResultDto,
   MediaAssetDto,
   MediaAssetStatus,
@@ -31,6 +36,7 @@ import type {
   MergeTagDto,
   RenameTagDto,
   RenameTagResultDto,
+  UpdateDataExportDto,
   UpsertTagDto,
   UpsertTagAliasDto,
 } from "@pic/shared";
@@ -109,7 +115,7 @@ async function request<T>(path: string, init: RequestInit = {}) {
   const token = getStoredToken();
   const headers = new Headers(init.headers);
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
 
   const response = await fetch(apiUrl(path), {
     ...init,
@@ -345,6 +351,60 @@ export function createIngestEvent(body: CreateIngestEventDto) {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export function listDataExports() {
+  return request<DataExportListItemDto[]>("/api/exports");
+}
+
+export function getDataExport(id: string) {
+  return request<DataExportDetailDto>(`/api/exports/${id}`);
+}
+
+export function createDataExport(body: CreateDataExportDto = {}) {
+  return request<DataExportDetailDto>("/api/exports", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function uploadDataExport(file: File) {
+  const formData = new FormData();
+  formData.set("file", file);
+  return request<DataExportDetailDto>("/api/exports/upload", {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export function updateDataExport(id: string, body: UpdateDataExportDto) {
+  return request<DataExportDetailDto>(`/api/exports/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteDataExport(id: string) {
+  return request<{ deleted: number }>(`/api/exports/${id}`, { method: "DELETE" });
+}
+
+export function importDataExport(id: string, body: ImportDataExportDto = {}) {
+  return request<DataImportResultDto>(`/api/exports/${id}/import`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function downloadDataExport(id: string) {
+  const token = getStoredToken();
+  const headers = new Headers();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const response = await fetch(apiUrl(`/api/exports/${id}/download`), { headers });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => ({ message: `下载失败：${response.status}` }))) as { message?: string };
+    throw new Error(payload.message || `下载失败：${response.status}`);
+  }
+  return response.blob();
 }
 
 export function fileUrl(md5: string) {

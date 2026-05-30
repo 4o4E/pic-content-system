@@ -2,6 +2,9 @@ import type {
   AuditDetailDto,
   AuditListItemDto,
   AuditState,
+  DataExportDetailDto,
+  DataExportListItemDto,
+  DataImportResultDto,
   IngestEventDto,
   MediaAssetDto,
   MediaAssetStatus,
@@ -23,6 +26,8 @@ import {
   Clock3,
   Combine,
   Database,
+  Download,
+  FileArchive,
   FileAudio,
   FileText,
   FileVideo,
@@ -35,7 +40,10 @@ import {
   ListChecks,
   Moon,
   MoreHorizontal,
+  Pencil,
   Plus,
+  RefreshCw,
+  Save,
   Search,
   Settings,
   Sun,
@@ -57,18 +65,24 @@ import {
   clearStoredToken,
   createTag,
   createTagAlias,
+  createDataExport,
   createMedia,
   deleteAssets,
   deleteAudit,
+  deleteDataExport,
+  downloadDataExport,
   deleteMediaContents,
   deleteTag,
   deleteTagAlias,
   fileUrl,
+  getDataExport,
   getAuditDetail,
   getStoredToken,
+  importDataExport,
   ignoreAsset,
   listAssets,
   listAudits,
+  listDataExports,
   listIngestEvents,
   listMedia,
   listPicHot,
@@ -82,11 +96,13 @@ import {
   renameTag,
   restoreMediaContentsToWorkspace,
   resetAudit,
+  updateDataExport,
+  uploadDataExport,
   type TagSort,
 } from "@/api/client";
 
 type ThemeMode = "light" | "dark";
-type PageKey = "home" | "workspace" | "library" | "pic" | "audits" | "events" | "tags";
+type PageKey = "home" | "workspace" | "library" | "pic" | "audits" | "events" | "tags" | "exports";
 type TagMode = "and" | "or";
 type ContentCardSize = "small" | "medium" | "large";
 type LibrarySort = "time_desc" | "time_asc" | "like_desc" | "like_asc";
@@ -131,6 +147,7 @@ const pageItems: Array<{ key: PageKey; label: string; icon: LucideIcon }> = [
   { key: "audits", label: "审批管理", icon: CheckCircle2 },
   { key: "events", label: "接入事件", icon: ListChecks },
   { key: "tags", label: "标签管理", icon: Tags },
+  { key: "exports", label: "导入导出", icon: FileArchive },
 ];
 
 const statusOptions: Array<{ label: string; value: MediaAssetStatus | "all" }> = [
@@ -195,6 +212,7 @@ const pagePaths: Record<PageKey, string> = {
   audits: "/audits",
   events: "/events",
   tags: "/tags",
+  exports: "/exports",
 };
 
 const defaultMediaFilters: MediaFilters = {
@@ -414,6 +432,18 @@ function formatDateTime(value: string) {
     minute: "2-digit",
     second: "2-digit",
   }).format(new Date(value));
+}
+
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex++;
+  }
+  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex] ?? "B"}`;
 }
 
 function elementSummary(element: MediaElement) {
@@ -3155,6 +3185,350 @@ function EventsPage() {
   );
 }
 
+function DataExportStatusBadge({ status }: { status: DataExportListItemDto["status"] }) {
+  const label = status === "ready" ? "已完成" : status === "running" ? "处理中" : "失败";
+  return (
+    <Badge
+      className={cn(
+        status === "ready" && "border-green-500/30 bg-green-500/10 text-green-600 dark:text-green-400",
+        status === "running" && "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+        status === "failed" && "border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400",
+      )}
+    >
+      {label}
+    </Badge>
+  );
+}
+
+function ImportResultPanel({ result }: { result: DataImportResultDto }) {
+  const tableEntries = Object.entries(result.tables).filter(([, value]) => value.created || value.updated || value.skipped || value.conflicted);
+  return (
+    <Card className="p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="text-base font-semibold">导入结果</h2>
+        <Badge>{result.conflictPolicy === "overwrite" ? "覆盖冲突" : "保留本地"}</Badge>
+      </div>
+      <div className="grid gap-3 md:grid-cols-4">
+        <div className="rounded-md border border-border bg-surface-muted p-3 text-sm">
+          <div className="text-xs text-muted-foreground">复制文件</div>
+          <div className="mt-1 text-lg font-semibold">{result.files.copied}</div>
+        </div>
+        <div className="rounded-md border border-border bg-surface-muted p-3 text-sm">
+          <div className="text-xs text-muted-foreground">跳过文件</div>
+          <div className="mt-1 text-lg font-semibold">{result.files.skipped}</div>
+        </div>
+        <div className="rounded-md border border-border bg-surface-muted p-3 text-sm">
+          <div className="text-xs text-muted-foreground">文件冲突</div>
+          <div className="mt-1 text-lg font-semibold">{result.files.conflicted}</div>
+        </div>
+        <div className="rounded-md border border-border bg-surface-muted p-3 text-sm">
+          <div className="text-xs text-muted-foreground">冲突记录</div>
+          <div className="mt-1 text-lg font-semibold">{result.conflicts.length}</div>
+        </div>
+      </div>
+      <div className="mt-4 overflow-hidden rounded-md border border-border">
+        {tableEntries.map(([table, value]) => (
+          <div key={table} className="grid grid-cols-[1fr_repeat(4,72px)] items-center border-b border-border px-3 py-2 text-sm last:border-b-0">
+            <span className="font-mono text-xs">{table}</span>
+            <span className="text-right tabular-nums text-green-600 dark:text-green-400">{value.created}</span>
+            <span className="text-right tabular-nums text-blue-600 dark:text-blue-400">{value.updated}</span>
+            <span className="text-right tabular-nums text-muted-foreground">{value.skipped}</span>
+            <span className="text-right tabular-nums text-red-600 dark:text-red-400">{value.conflicted}</span>
+          </div>
+        ))}
+        {tableEntries.length === 0 && <div className="p-4 text-sm text-muted-foreground">没有数据库记录变化。</div>}
+      </div>
+      {result.conflicts.length > 0 && (
+        <div className="mt-4 max-h-40 overflow-y-auto rounded-md border border-red-500/20 bg-red-500/10 p-3 text-xs leading-5 text-red-700 dark:text-red-300">
+          {result.conflicts.slice(0, 50).map((conflict) => (
+            <div key={conflict}>{conflict}</div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function DataExportsPage() {
+  const [items, setItems] = useState<DataExportListItemDto[]>([]);
+  const [selected, setSelected] = useState<DataExportDetailDto | DataExportListItemDto | null>(null);
+  const [editingId, setEditingId] = useState("");
+  const [editName, setEditName] = useState("");
+  const [editNote, setEditNote] = useState("");
+  const [pendingDeleteId, setPendingDeleteId] = useState("");
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<DataImportResultDto | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function refreshExports() {
+    const rows = await listDataExports();
+    setItems(rows);
+    setSelected((current) => (current ? rows.find((item) => item.id === current.id) ?? null : current));
+    setError("");
+  }
+
+  useEffect(() => {
+    refreshExports().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载导出记录失败"));
+  }, []);
+
+  useEffect(() => {
+    if (!items.some((item) => item.status === "running")) return;
+    const timer = window.setInterval(() => {
+      refreshExports().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "刷新导出记录失败"));
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [items]);
+
+  function startEditing(item: DataExportListItemDto) {
+    setEditingId(item.id);
+    setEditName(item.name);
+    setEditNote(item.note ?? "");
+  }
+
+  async function createExport() {
+    setBusy("create");
+    try {
+      const item = await createDataExport();
+      await refreshExports();
+      setSelected(item);
+      setResult(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "创建导出失败");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function uploadExport(file: File | undefined) {
+    if (!file) return;
+    setBusy("upload");
+    try {
+      const item = await uploadDataExport(file);
+      await refreshExports();
+      setSelected(item);
+      setResult(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "上传导出包失败");
+    } finally {
+      setBusy("");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function saveExport(item: DataExportListItemDto) {
+    setBusy(`save:${item.id}`);
+    try {
+      const updated = await updateDataExport(item.id, { name: editName, note: editNote });
+      await refreshExports();
+      setSelected(updated);
+      setEditingId("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "保存导出记录失败");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function removeExport(item: DataExportListItemDto) {
+    if (pendingDeleteId !== item.id) {
+      setPendingDeleteId(item.id);
+      return;
+    }
+    setBusy(`delete:${item.id}`);
+    try {
+      await deleteDataExport(item.id);
+      await refreshExports();
+      setSelected((current) => (current?.id === item.id ? null : current));
+      setResult(null);
+      setPendingDeleteId("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "删除导出记录失败");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function downloadExport(item: DataExportListItemDto) {
+    setBusy(`download:${item.id}`);
+    try {
+      const blob = await downloadDataExport(item.id);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = item.zipFileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "下载导出包失败");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function applyImport(item: DataExportListItemDto) {
+    setBusy(`import:${item.id}`);
+    try {
+      const imported = await importDataExport(item.id);
+      setResult(imported);
+      setSelected(item);
+      await refreshExports();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "应用导入失败");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function showDetail(item: DataExportListItemDto) {
+    setBusy(`detail:${item.id}`);
+    try {
+      const detail = await getDataExport(item.id);
+      setSelected(detail);
+      setResult(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "读取导出详情失败");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  return (
+    <section className="space-y-4">
+      {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button onClick={() => void createExport()} disabled={!!busy}>
+            <FileArchive className="h-4 w-4" />
+            {busy === "create" ? "导出中" : "新建导出"}
+          </Button>
+          <Button variant="secondary" onClick={() => fileInputRef.current?.click()} disabled={!!busy}>
+            <Upload className="h-4 w-4" />
+            {busy === "upload" ? "上传中" : "上传 zip"}
+          </Button>
+          <Button variant="ghost" className="h-9 w-9 px-0" aria-label="刷新导出列表" onClick={() => void refreshExports()} disabled={!!busy}>
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+          <input ref={fileInputRef} className="hidden" type="file" accept=".zip,application/zip" onChange={(event) => void uploadExport(event.target.files?.[0])} />
+        </div>
+        <Badge>{items.length} 个</Badge>
+      </div>
+      <Card className="overflow-hidden">
+        <div className="hidden grid-cols-[1.3fr_96px_96px_96px_112px_156px_300px] items-center border-b border-border bg-surface-muted px-4 py-2 text-xs text-muted-foreground xl:grid">
+          <span>名称</span>
+          <span>状态</span>
+          <span className="text-right">数据库</span>
+          <span className="text-right">文件</span>
+          <span className="text-right">大小</span>
+          <span>创建时间</span>
+          <span className="text-right">操作</span>
+        </div>
+        {items.map((item) => {
+          const editing = editingId === item.id;
+          return (
+            <div
+              key={item.id}
+              className={cn(
+                "grid gap-3 border-b border-border px-4 py-3 text-sm last:border-b-0 xl:grid-cols-[1.3fr_96px_96px_96px_112px_156px_300px] xl:items-center",
+                selected?.id === item.id ? "bg-primary-muted/50" : "bg-surface hover:bg-surface-muted",
+              )}
+            >
+              <div className="min-w-0">
+                {editing ? (
+                  <div className="grid gap-2">
+                    <input
+                      className="h-9 min-w-0 rounded-md border border-border bg-surface px-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                      value={editName}
+                      onChange={(event) => setEditName(event.target.value)}
+                    />
+                    <input
+                      className="h-9 min-w-0 rounded-md border border-border bg-surface px-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                      placeholder="备注"
+                      value={editNote}
+                      onChange={(event) => setEditNote(event.target.value)}
+                    />
+                  </div>
+                ) : (
+                  <>
+                    <div className="truncate font-medium">{item.name}</div>
+                    <div className="mt-1 truncate text-xs text-subtle-foreground">{item.note || item.id}</div>
+                  </>
+                )}
+              </div>
+              <DataExportStatusBadge status={item.status} />
+              <span className="text-right tabular-nums text-muted-foreground">{item.databaseRows}</span>
+              <span className="text-right tabular-nums text-muted-foreground">{item.objectCount}</span>
+              <span className="text-right tabular-nums text-muted-foreground">{formatBytes(item.zipSizeBytes)}</span>
+              <span className="text-xs text-subtle-foreground">{formatDateTime(item.createdAt)}</span>
+              <div className="flex flex-wrap justify-end gap-2">
+                {editing ? (
+                  <>
+                    <Button className="h-8" variant="secondary" onClick={() => void saveExport(item)} disabled={busy === `save:${item.id}`}>
+                      <Save className="h-4 w-4" />
+                      保存
+                    </Button>
+                    <Button className="h-8" variant="ghost" onClick={() => setEditingId("")}>
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button className="h-8" variant="secondary" onClick={() => void showDetail(item)} disabled={busy === `detail:${item.id}`}>
+                      查看
+                    </Button>
+                    <Button className="h-8" variant="secondary" onClick={() => startEditing(item)}>
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    <Button className="h-8" variant="secondary" onClick={() => void downloadExport(item)} disabled={item.status !== "ready" || busy === `download:${item.id}`}>
+                      <Download className="h-4 w-4" />
+                    </Button>
+                    <Button className="h-8" variant="secondary" onClick={() => void applyImport(item)} disabled={item.status !== "ready" || busy === `import:${item.id}`}>
+                      应用导入
+                    </Button>
+                    <Button className="h-8" variant={pendingDeleteId === item.id ? "danger" : "secondary"} onClick={() => void removeExport(item)} disabled={busy === `delete:${item.id}`}>
+                      <Trash2 className="h-4 w-4" />
+                      {pendingDeleteId === item.id ? "确认" : "删除"}
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {items.length === 0 && <div className="p-8 text-center text-sm text-muted-foreground">暂无导出记录。</div>}
+      </Card>
+      {selected && (
+        <Card className="p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold">{selected.name}</h2>
+              <div className="mt-1 text-xs text-subtle-foreground">{selected.zipFileName}</div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Badge>{selected.databaseRows} 行</Badge>
+              <Badge>{selected.objectCount} 文件</Badge>
+              <Badge>{formatBytes(selected.objectSizeBytes)}</Badge>
+            </div>
+          </div>
+          {"manifest" in selected && selected.manifest && (
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+              {selected.manifest.tables.map((table) => (
+                <div key={table.table} className="flex items-center justify-between rounded-md border border-border bg-surface-muted px-3 py-2 text-sm">
+                  <span className="font-mono text-xs">{table.table}</span>
+                  <span className="tabular-nums text-muted-foreground">{table.rows}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      )}
+      {result && <ImportResultPanel result={result} />}
+    </section>
+  );
+}
+
 function DashboardPreview({ contents, events }: { contents: MediaContentDto[]; events: IngestEventDto[] }) {
   return (
     <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
@@ -3584,6 +3958,7 @@ export default function App() {
           {page === "audits" && <AuditsPage onOpenImagePreview={openImagePreview} />}
           {page === "events" && <EventsPage />}
           {page === "tags" && <TagManagementPage />}
+          {page === "exports" && <DataExportsPage />}
         </main>
       </div>
       <ImagePreviewViewer state={imagePreview} onClose={() => setImagePreview(emptyImagePreviewState)} />

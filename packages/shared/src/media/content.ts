@@ -114,6 +114,7 @@ export interface CreateMediaContentDto {
   tags: string[];
   elements: MediaElement[];
   assetIds?: string[];
+  auditRequired?: boolean;
   source?: SourceBindingDto;
 }
 

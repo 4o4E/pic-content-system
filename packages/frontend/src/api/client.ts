@@ -395,6 +395,14 @@ export function importDataExport(id: string, body: ImportDataExportDto = {}) {
   });
 }
 
+export function dataExportDownloadUrl(id: string) {
+  const token = getStoredToken();
+  const url = new URL(apiUrl(`/api/exports/${id}/download`), API_BASE_URL || window.location.origin);
+  if (token) url.searchParams.set("token", token);
+  if (API_BASE_URL) return url.toString();
+  return `${url.pathname}${url.search}`;
+}
+
 export async function downloadDataExport(id: string) {
   const token = getStoredToken();
   const headers = new Headers();

@@ -80,18 +80,15 @@ export interface DataExportTableSummaryDto {
   rows: number;
 }
 
-export interface DataExportObjectSummaryDto {
-  storageKey: string;
-  sizeBytes: number;
-}
-
 export interface DataExportManifestDto {
   schemaVersion: number;
   id: string;
   name: string;
   createdAt: string;
+  databaseRows: number;
+  objectCount: number;
+  objectSizeBytes: number;
   tables: DataExportTableSummaryDto[];
-  objects: DataExportObjectSummaryDto[];
 }
 
 export interface DataExportListItemDto {
@@ -102,6 +99,9 @@ export interface DataExportListItemDto {
   schemaVersion: number;
   zipFileName: string;
   zipSizeBytes: number;
+  zipTempSizeBytes?: number;
+  progressPercent?: number;
+  durationSeconds?: number;
   databaseRows: number;
   objectCount: number;
   objectSizeBytes: number;

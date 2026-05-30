@@ -57,6 +57,18 @@ interface LoadedBundle {
   conflicts: string[];
 }
 
+interface ParsedManifest {
+  schemaVersion?: number;
+  id?: string;
+  name?: string;
+  createdAt?: string;
+  databaseRows?: number;
+  objectCount?: number;
+  objectSizeBytes?: number;
+  tables?: Array<{ table?: string; rows?: number }>;
+  objects?: Array<{ sizeBytes?: number }>;
+}
+
 interface ExportMediaFile {
   md5: string;
   storageKey: string;
@@ -208,6 +220,11 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function dateMs(value: string | undefined) {
+  const time = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(time) ? time : undefined;
+}
+
 function exportsRoot(config: AppConfig) {
   return path.resolve(process.cwd(), config.filesDir, "exports");
 }
@@ -249,11 +266,22 @@ async function readSidecar(config: AppConfig, id: string): Promise<ExportSidecar
   }
 }
 
+async function fileSize(file: string) {
+  try {
+    const stat = await fs.promises.stat(file);
+    return stat.isFile() ? stat.size : 0;
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw cause;
+  }
+}
+
 async function recoverStaleSidecar(config: AppConfig, sidecar: ExportSidecar) {
   if (sidecar.status !== "running" || activeExportJobs.has(sidecar.id)) return sidecar;
   const failedAt = nowIso();
+  const { manifest: _manifest, ...sidecarIndex } = sidecar;
   const failed: ExportSidecar = {
-    ...sidecar,
+    ...sidecarIndex,
     status: "failed",
     updatedAt: failedAt,
     finishedAt: failedAt,
@@ -262,6 +290,36 @@ async function recoverStaleSidecar(config: AppConfig, sidecar: ExportSidecar) {
   await fs.promises.rm(`${dataExportZipPath(config, sidecar.id)}.tmp`, { force: true }).catch(() => undefined);
   await writeJsonFile(sidecarPath(config, sidecar.id), failed);
   return failed;
+}
+
+async function withRuntimeStats(config: AppConfig, sidecar: ExportSidecar): Promise<ExportSidecar> {
+  const startedAt = dateMs(sidecar.createdAt);
+  const endedAt = dateMs(sidecar.finishedAt) ?? (sidecar.status === "running" ? Date.now() : dateMs(sidecar.updatedAt));
+  const durationSeconds = startedAt !== undefined && endedAt !== undefined ? Math.max(0, Math.floor((endedAt - startedAt) / 1000)) : undefined;
+  const zipTempSizeBytes = sidecar.status === "running" ? await fileSize(`${dataExportZipPath(config, sidecar.id)}.tmp`) : undefined;
+  const writtenSizeBytes = sidecar.status === "running" ? zipTempSizeBytes ?? 0 : sidecar.zipSizeBytes;
+  const estimatedTotalBytes = sidecar.status === "running" ? sidecar.objectSizeBytes : sidecar.zipSizeBytes;
+  const progressPercent =
+    sidecar.status === "ready"
+      ? 100
+      : estimatedTotalBytes > 0
+        ? Math.max(0, Math.min(99, Math.floor((writtenSizeBytes / estimatedTotalBytes) * 100)))
+        : sidecar.status === "running"
+          ? 0
+          : undefined;
+  return {
+    ...sidecar,
+    ...(zipTempSizeBytes === undefined ? {} : { zipTempSizeBytes }),
+    ...(progressPercent === undefined ? {} : { progressPercent }),
+    ...(durationSeconds === undefined ? {} : { durationSeconds }),
+  };
+}
+
+async function withPackageManifest(config: AppConfig, sidecar: ExportSidecar): Promise<DataExportDetailDto> {
+  const item = await withRuntimeStats(config, sidecar);
+  if (item.status !== "ready") return item;
+  const manifest = await readManifestFromZip(dataExportZipPath(config, item.id)).catch(() => sidecar.manifest);
+  return manifest ? { ...item, manifest } : item;
 }
 
 function toListItem(item: ExportSidecar): DataExportListItemDto {
@@ -436,11 +494,38 @@ function tableSummaries(records: ExportRecords) {
 }
 
 function databaseRows(manifest: DataExportManifestDto) {
-  return manifest.tables.reduce((sum, table) => sum + table.rows, 0);
+  return manifest.databaseRows;
 }
 
 function objectSizeBytes(manifest: DataExportManifestDto) {
-  return manifest.objects.reduce((sum, object) => sum + object.sizeBytes, 0);
+  return manifest.objectSizeBytes;
+}
+
+function nonNegativeNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function normalizeManifest(raw: unknown): DataExportManifestDto {
+  const manifest = raw as ParsedManifest;
+  if (manifest.schemaVersion !== SCHEMA_VERSION) throw new Error(`不支持的导出包版本：${manifest.schemaVersion ?? "未知"}`);
+  const tables = (Array.isArray(manifest.tables) ? manifest.tables : []).map((table) => ({
+    table: String(table.table ?? ""),
+    rows: nonNegativeNumber(table.rows) ?? 0,
+  }));
+  const legacyObjects = Array.isArray(manifest.objects) ? manifest.objects : [];
+  const databaseRows = nonNegativeNumber(manifest.databaseRows) ?? tables.reduce((sum, table) => sum + table.rows, 0);
+  const objectCount = nonNegativeNumber(manifest.objectCount) ?? legacyObjects.length;
+  const objectSizeBytes = nonNegativeNumber(manifest.objectSizeBytes) ?? legacyObjects.reduce((sum, object) => sum + (nonNegativeNumber(object.sizeBytes) ?? 0), 0);
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    id: String(manifest.id ?? ""),
+    name: String(manifest.name ?? "未命名导出"),
+    createdAt: String(manifest.createdAt ?? nowIso()),
+    databaseRows,
+    objectCount,
+    objectSizeBytes,
+    tables,
+  };
 }
 
 function jsonl(records: unknown[]) {
@@ -476,7 +561,10 @@ export async function listDataExports(config: AppConfig): Promise<DataExportList
   for (const file of files) {
     if (!file.endsWith(".json")) continue;
     const id = file.slice(0, -".json".length);
-    const sidecar = await readSidecar(config, id).then((item) => (item ? recoverStaleSidecar(config, item) : undefined)).catch(() => undefined);
+    const sidecar = await readSidecar(config, id)
+      .then((item) => (item ? recoverStaleSidecar(config, item) : undefined))
+      .then((item) => (item ? withRuntimeStats(config, item) : undefined))
+      .catch(() => undefined);
     if (sidecar) items.push(toListItem(sidecar));
   }
   return items.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
@@ -484,7 +572,7 @@ export async function listDataExports(config: AppConfig): Promise<DataExportList
 
 export async function getDataExport(config: AppConfig, id: string): Promise<DataExportDetailDto | undefined> {
   const sidecar = await readSidecar(config, id);
-  return sidecar ? recoverStaleSidecar(config, sidecar) : undefined;
+  return sidecar ? withPackageManifest(config, await recoverStaleSidecar(config, sidecar)) : undefined;
 }
 
 export async function createDataExport(config: AppConfig, input: CreateDataExportDto): Promise<DataExportDetailDto> {
@@ -510,7 +598,7 @@ export async function createDataExport(config: AppConfig, input: CreateDataExpor
   await writeJsonFile(sidecarPath(config, id), sidecar);
   activeExportJobs.add(id);
   void runDataExportJob(config, sidecar);
-  return sidecar;
+  return withRuntimeStats(config, sidecar);
 }
 
 async function runDataExportJob(config: AppConfig, sidecar: ExportSidecar) {
@@ -518,21 +606,23 @@ async function runDataExportJob(config: AppConfig, sidecar: ExportSidecar) {
   const tempZip = `${zip}.tmp`;
   try {
     const [records, objects] = await Promise.all([readDatabaseRecords(), collectObjectFiles(config)]);
+    const tables = tableSummaries(records);
     const manifest: DataExportManifestDto = {
       schemaVersion: SCHEMA_VERSION,
       id: sidecar.id,
       name: sidecar.name,
       createdAt: sidecar.createdAt,
-      tables: tableSummaries(records),
-      objects: objects.map((object) => ({ storageKey: object.storageKey, sizeBytes: object.sizeBytes })),
+      databaseRows: tables.reduce((sum, table) => sum + table.rows, 0),
+      objectCount: objects.length,
+      objectSizeBytes: objects.reduce((sum, object) => sum + object.sizeBytes, 0),
+      tables,
     };
     await writeJsonFile(sidecarPath(config, sidecar.id), {
       ...sidecar,
       databaseRows: databaseRows(manifest),
-      objectCount: manifest.objects.length,
+      objectCount: manifest.objectCount,
       objectSizeBytes: objectSizeBytes(manifest),
       updatedAt: nowIso(),
-      manifest,
     } satisfies ExportSidecar);
     await writeZip(tempZip, records, objects, manifest);
     await fs.promises.rename(tempZip, zip);
@@ -543,11 +633,10 @@ async function runDataExportJob(config: AppConfig, sidecar: ExportSidecar) {
       status: "ready",
       zipSizeBytes: stat.size,
       databaseRows: databaseRows(manifest),
-      objectCount: manifest.objects.length,
+      objectCount: manifest.objectCount,
       objectSizeBytes: objectSizeBytes(manifest),
       updatedAt: finishedAt,
       finishedAt,
-      manifest,
     };
     await writeJsonFile(sidecarPath(config, sidecar.id), ready);
   } catch (cause) {
@@ -569,21 +658,22 @@ async function runDataExportJob(config: AppConfig, sidecar: ExportSidecar) {
 export async function updateDataExport(config: AppConfig, id: string, input: UpdateDataExportDto): Promise<DataExportDetailDto | undefined> {
   const sidecar = await readSidecar(config, id);
   if (!sidecar) return undefined;
+  const { manifest: _manifest, ...sidecarIndex } = sidecar;
   const updated: ExportSidecar = {
-    ...sidecar,
+    ...sidecarIndex,
     name: normalizeName(input.name, sidecar.name),
     note: input.note === undefined ? sidecar.note : input.note,
     updatedAt: nowIso(),
   };
-  if (updated.manifest) updated.manifest = { ...updated.manifest, name: updated.name };
   await writeJsonFile(sidecarPath(config, id), updated);
-  return updated;
+  return withPackageManifest(config, updated);
 }
 
 export async function deleteDataExport(config: AppConfig, id: string) {
   await ensureExportsRoot(config);
   await Promise.all([
     fs.promises.rm(dataExportZipPath(config, id), { force: true }),
+    fs.promises.rm(`${dataExportZipPath(config, id)}.tmp`, { force: true }),
     fs.promises.rm(sidecarPath(config, id), { force: true }),
   ]);
 }
@@ -600,11 +690,19 @@ function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
 function openZip(zipPath: string) {
   return new Promise<yauzl.ZipFile>((resolve, reject) => {
     yauzl.open(zipPath, { lazyEntries: true }, (error, zipFile) => {
-      if (error) reject(error);
+      if (error) reject(normalizeZipError(error));
       else if (!zipFile) reject(new Error("无法打开 zip 文件"));
       else resolve(zipFile);
     });
   });
+}
+
+function normalizeZipError(cause: unknown) {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  if (message.includes("End of central directory record signature not found")) {
+    return new Error("导出 zip 文件不完整或已被截断，请重新下载或重新上传完整文件");
+  }
+  return cause instanceof Error ? cause : new Error(message);
 }
 
 function openEntryStream(zipFile: yauzl.ZipFile, entry: yauzl.Entry) {
@@ -630,9 +728,7 @@ export async function readManifestFromZip(zipPath: string): Promise<DataExportMa
         .then(streamToBuffer)
         .then((buffer) => {
           zipFile.close();
-          const manifest = JSON.parse(buffer.toString("utf8")) as DataExportManifestDto;
-          if (manifest.schemaVersion !== SCHEMA_VERSION) throw new Error(`不支持的导出包版本：${manifest.schemaVersion}`);
-          resolve(manifest);
+          resolve(normalizeManifest(JSON.parse(buffer.toString("utf8"))));
         })
         .catch((cause) => {
           zipFile.close();
@@ -640,7 +736,7 @@ export async function readManifestFromZip(zipPath: string): Promise<DataExportMa
         });
     });
     zipFile.on("end", () => reject(new Error("导出包缺少 manifest.json")));
-    zipFile.on("error", reject);
+    zipFile.on("error", (cause) => reject(normalizeZipError(cause)));
   });
 }
 
@@ -652,9 +748,12 @@ export async function saveUploadedDataExport(
   const id = nextSnowflakeId();
   const zip = dataExportZipPath(config, id);
   const tempZip = `${zip}.upload.tmp`;
-  await pipeline(input.stream, fs.createWriteStream(tempZip));
 
   try {
+    await pipeline(input.stream, fs.createWriteStream(tempZip));
+    if ((input.stream as NodeJS.ReadableStream & { truncated?: boolean }).truncated) {
+      throw new Error("上传 zip 超过限制或传输被截断，请重新上传完整文件");
+    }
     const manifest = await readManifestFromZip(tempZip);
     await fs.promises.rename(tempZip, zip);
     const stat = await fs.promises.stat(zip);
@@ -667,18 +766,17 @@ export async function saveUploadedDataExport(
       zipFileName: `${id}.zip`,
       zipSizeBytes: stat.size,
       databaseRows: databaseRows(manifest),
-      objectCount: manifest.objects.length,
+      objectCount: manifest.objectCount,
       objectSizeBytes: objectSizeBytes(manifest),
       createdAt,
       updatedAt: createdAt,
       finishedAt: createdAt,
-      manifest: { ...manifest, id, name: normalizeName(manifest.name, input.filename || "上传导出") },
     };
     await writeJsonFile(sidecarPath(config, id), sidecar);
-    return sidecar;
+    return { ...(await withRuntimeStats(config, sidecar)), manifest: { ...manifest, id, name: normalizeName(manifest.name, input.filename || "上传导出") } };
   } catch (cause) {
     await fs.promises.rm(tempZip, { force: true }).catch(() => undefined);
-    throw cause;
+    throw normalizeZipError(cause);
   }
 }
 
@@ -751,8 +849,7 @@ async function loadBundleAndCopyObjects(config: AppConfig, zipPath: string): Pro
         if (entry.fileName.endsWith("/")) return;
         if (entry.fileName === MANIFEST_ENTRY) {
           const buffer = await streamToBuffer(await openEntryStream(zipFile, entry));
-          manifest = JSON.parse(buffer.toString("utf8")) as DataExportManifestDto;
-          if (manifest.schemaVersion !== SCHEMA_VERSION) throw new Error(`不支持的导出包版本：${manifest.schemaVersion}`);
+          manifest = normalizeManifest(JSON.parse(buffer.toString("utf8")));
           return;
         }
         if (entry.fileName.startsWith(DB_ENTRY_PREFIX)) {
@@ -786,7 +883,7 @@ async function loadBundleAndCopyObjects(config: AppConfig, zipPath: string): Pro
         });
     });
     zipFile.on("end", resolve);
-    zipFile.on("error", reject);
+    zipFile.on("error", (cause) => reject(normalizeZipError(cause)));
   });
   zipFile.close();
   if (!manifest) throw new Error("导出包缺少 manifest.json");
@@ -1111,7 +1208,9 @@ export async function importDataExport(config: AppConfig, id: string, input?: Im
   if (!sidecar) throw new Error("导出记录不存在");
   if (sidecar.status !== "ready") throw new Error("只能导入已完成的导出包");
   const conflictPolicy = importConflictPolicy(input);
-  const bundle = await loadBundleAndCopyObjects(config, dataExportZipPath(config, id));
+  const zipPath = dataExportZipPath(config, id);
+  if ((await fileSize(zipPath)) <= 0) throw new Error("导出 zip 文件不存在或为空，无法导入");
+  const bundle = await loadBundleAndCopyObjects(config, zipPath);
   const database = await importDatabaseRecords(bundle, conflictPolicy);
   return {
     exportId: id,

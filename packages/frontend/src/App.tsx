@@ -18,6 +18,7 @@ import type {
 } from "@pic/shared";
 import type { LucideIcon } from "lucide-react";
 import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   Archive,
   CheckCircle2,
@@ -66,11 +67,11 @@ import {
   createTag,
   createTagAlias,
   createDataExport,
+  dataExportDownloadUrl,
   createMedia,
   deleteAssets,
   deleteAudit,
   deleteDataExport,
-  downloadDataExport,
   deleteMediaContents,
   deleteTag,
   deleteTagAlias,
@@ -444,6 +445,17 @@ function formatBytes(bytes: number) {
     unitIndex++;
   }
   return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex] ?? "B"}`;
+}
+
+function formatDuration(seconds?: number) {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "--";
+  const total = Math.floor(seconds);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const restSeconds = total % 60;
+  if (hours > 0) return `${hours}时${minutes.toString().padStart(2, "0")}分`;
+  if (minutes > 0) return `${minutes}分${restSeconds.toString().padStart(2, "0")}秒`;
+  return `${restSeconds}秒`;
 }
 
 function elementSummary(element: MediaElement) {
@@ -1103,7 +1115,7 @@ function Modal({
   children: ReactNode;
   onClose: () => void;
 }) {
-  return (
+  return createPortal(
     <div className={cn("fixed inset-0 flex items-center justify-center bg-black/70 p-4", zIndex)} role="dialog" aria-modal="true" onClick={onClose}>
       <div className={cn("flex max-h-[92vh] w-full flex-col overflow-hidden rounded-md border border-border bg-surface shadow-xl", maxWidth)} onClick={(event) => event.stopPropagation()}>
         <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
@@ -1117,7 +1129,8 @@ function Modal({
         </div>
         <div className="min-h-0 flex-1">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -1212,34 +1225,37 @@ function ChatRecordPanel({
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
         <div className="space-y-4">
-          {speaks.map((speak, speakIndex) => (
-            <div key={`${speak.time}-${speakIndex}-${speak.sender.displayName}`} className="flex items-start gap-2">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[#dfe5ec] text-xs font-semibold text-[#475569]">
-                {speak.sender.displayName.slice(0, 1) || "?"}
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="mb-1 flex items-center gap-2 text-xs text-[#6b7280]">
-                  <span className="max-w-36 truncate">{speak.sender.displayName || "未知用户"}</span>
-                  <span>{formatDateTime(speak.time)}</span>
+          {speaks.map((speak, speakIndex) => {
+            const displayName = speak.sender.displayName || "未知用户";
+            return (
+              <div key={`${speak.time}-${speakIndex}-${displayName}`} className="flex items-start gap-2">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[#dfe5ec] text-xs font-semibold text-[#475569]">
+                  {displayName.slice(0, 1) || "?"}
                 </div>
-                <div className="flex flex-col items-start gap-2">
-                  {speak.message.map((message, messageIndex) => {
-                    const sourceKey = `${speakIndex}-${messageIndex}-${elementSummary(message)}`;
-                    return (
-                      <div key={sourceKey} className="max-w-full">
-                        <ChatRecordMediaItem
-                          element={message}
-                          active={nextItem?.sourceKey === sourceKey}
-                          onOpenMedia={onOpenMedia}
-                          onOpenChatRecord={(nestedElement) => onOpenChatRecord(index, sourceKey, nestedElement)}
-                        />
-                      </div>
-                    );
-                  })}
+                <div className="min-w-0 flex-1">
+                  <div className="mb-1 flex items-center gap-2 text-xs text-[#6b7280]">
+                    <span className="max-w-36 truncate">{displayName}</span>
+                    <span>{formatDateTime(speak.time)}</span>
+                  </div>
+                  <div className="flex flex-col items-start gap-2">
+                    {speak.message.map((message, messageIndex) => {
+                      const sourceKey = `${speakIndex}-${messageIndex}-${elementSummary(message)}`;
+                      return (
+                        <div key={sourceKey} className="max-w-full">
+                          <ChatRecordMediaItem
+                            element={message}
+                            active={nextItem?.sourceKey === sourceKey}
+                            onOpenMedia={onOpenMedia}
+                            onOpenChatRecord={(nestedElement) => onOpenChatRecord(index, sourceKey, nestedElement)}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
           {speaks.length === 0 && <div className="rounded-md bg-white p-4 text-center text-sm text-[#6b7280]">这条聊天记录没有发言。</div>}
         </div>
       </div>
@@ -1279,7 +1295,7 @@ function ChatRecordModal({
   return (
     <Modal title="聊天记录" subtitle={`${chatRecordSpeaks(element).length} 条发言`} closeLabel="关闭聊天记录" zIndex="z-[1000]" maxWidth="max-w-[96vw]" onClose={onClose}>
       <div className="min-h-0 overflow-x-auto bg-surface-muted p-4">
-        <div className="flex h-[calc(92vh-5rem)] min-w-max gap-4">
+        <div className="mx-auto flex h-[calc(92vh-5rem)] w-max gap-4">
           {stack.map((item, index) => (
             <ChatRecordPanel
               key={`${index}-${item.sourceKey}`}
@@ -2510,13 +2526,10 @@ function SourceProfileSummary({ profile }: { profile?: SourceProfileDto }) {
   if (!profile) return <div className="text-xs text-muted-foreground">暂无来源资料</div>;
   const isQq = profile.platform === "qq" || profile.platform === "napcat";
   const title = isQq ? profile.displayName || profile.userId || "QQ 用户" : profile.displayName || profile.userId || profile.platform;
+  const initial = title.slice(0, 1) || profile.platform.slice(0, 1) || "?";
   return (
     <div className="flex min-w-0 items-center gap-3 rounded-md border border-border bg-surface-muted p-3">
-      {profile.avatarUrl ? (
-        <img className="h-10 w-10 shrink-0 rounded-md object-cover" src={profile.avatarUrl} alt="来源头像" loading="lazy" />
-      ) : (
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-surface text-xs text-muted-foreground">{profile.platform}</div>
-      )}
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-surface text-xs font-semibold text-muted-foreground">{initial}</div>
       <div className="min-w-0 text-xs">
         <div className="truncate font-medium text-foreground">{title}</div>
         <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-subtle-foreground">
@@ -3200,6 +3213,26 @@ function DataExportStatusBadge({ status }: { status: DataExportListItemDto["stat
   );
 }
 
+function DataExportProgress({ item }: { item: DataExportListItemDto }) {
+  const writtenBytes = item.status === "running" ? item.zipTempSizeBytes ?? 0 : item.zipSizeBytes;
+  const percent = item.progressPercent ?? (item.status === "ready" ? 100 : 0);
+  const showBar = item.status === "running" || item.status === "ready";
+  return (
+    <div className="min-w-0 space-y-1 text-right">
+      <div className="tabular-nums text-muted-foreground">{formatBytes(writtenBytes)}</div>
+      {item.status === "running" && <div className="text-[11px] text-subtle-foreground">zip.tmp</div>}
+      {showBar && (
+        <div className="ml-auto flex w-32 items-center justify-end gap-2">
+          <div className="h-1.5 w-20 overflow-hidden rounded-full bg-surface-muted">
+            <div className="h-full rounded-full bg-primary" style={{ width: `${Math.max(0, Math.min(100, percent))}%` }} />
+          </div>
+          <span className="w-9 text-right text-[11px] tabular-nums text-subtle-foreground">{percent}%</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ImportResultPanel({ result }: { result: DataImportResultDto }) {
   const tableEntries = Object.entries(result.tables).filter(([, value]) => value.created || value.updated || value.skipped || value.conflicted);
   return (
@@ -3352,15 +3385,12 @@ function DataExportsPage() {
   async function downloadExport(item: DataExportListItemDto) {
     setBusy(`download:${item.id}`);
     try {
-      const blob = await downloadDataExport(item.id);
-      const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
-      link.href = url;
+      link.href = dataExportDownloadUrl(item.id);
       link.download = item.zipFileName;
       document.body.appendChild(link);
       link.click();
       link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "下载导出包失败");
     } finally {
@@ -3416,12 +3446,13 @@ function DataExportsPage() {
         <Badge>{items.length} 个</Badge>
       </div>
       <Card className="overflow-hidden">
-        <div className="hidden grid-cols-[1.3fr_96px_96px_96px_112px_156px_300px] items-center border-b border-border bg-surface-muted px-4 py-2 text-xs text-muted-foreground xl:grid">
+        <div className="hidden grid-cols-[1.3fr_88px_84px_84px_132px_84px_148px_300px] items-center border-b border-border bg-surface-muted px-4 py-2 text-xs text-muted-foreground xl:grid">
           <span>名称</span>
           <span>状态</span>
           <span className="text-right">数据库</span>
           <span className="text-right">文件</span>
-          <span className="text-right">大小</span>
+          <span className="text-right">进度</span>
+          <span className="text-right">耗时</span>
           <span>创建时间</span>
           <span className="text-right">操作</span>
         </div>
@@ -3431,7 +3462,7 @@ function DataExportsPage() {
             <div
               key={item.id}
               className={cn(
-                "grid gap-3 border-b border-border px-4 py-3 text-sm last:border-b-0 xl:grid-cols-[1.3fr_96px_96px_96px_112px_156px_300px] xl:items-center",
+                "grid gap-3 border-b border-border px-4 py-3 text-sm last:border-b-0 xl:grid-cols-[1.3fr_88px_84px_84px_132px_84px_148px_300px] xl:items-center",
                 selected?.id === item.id ? "bg-primary-muted/50" : "bg-surface hover:bg-surface-muted",
               )}
             >
@@ -3460,7 +3491,8 @@ function DataExportsPage() {
               <DataExportStatusBadge status={item.status} />
               <span className="text-right tabular-nums text-muted-foreground">{item.databaseRows}</span>
               <span className="text-right tabular-nums text-muted-foreground">{item.objectCount}</span>
-              <span className="text-right tabular-nums text-muted-foreground">{formatBytes(item.zipSizeBytes)}</span>
+              <DataExportProgress item={item} />
+              <span className="text-right tabular-nums text-muted-foreground">{formatDuration(item.durationSeconds)}</span>
               <span className="text-xs text-subtle-foreground">{formatDateTime(item.createdAt)}</span>
               <div className="flex flex-wrap justify-end gap-2">
                 {editing ? (
@@ -3510,8 +3542,21 @@ function DataExportsPage() {
               <Badge>{selected.databaseRows} 行</Badge>
               <Badge>{selected.objectCount} 文件</Badge>
               <Badge>{formatBytes(selected.objectSizeBytes)}</Badge>
+              <Badge>{formatDuration(selected.durationSeconds)} 耗时</Badge>
+              {selected.status === "running" && <Badge>{formatBytes(selected.zipTempSizeBytes ?? 0)} 已写入</Badge>}
             </div>
           </div>
+          {selected.status === "running" && (
+            <div className="mb-4 rounded-md border border-border bg-surface-muted p-3">
+              <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+                <span>zip.tmp 写入进度</span>
+                <span className="tabular-nums">{selected.progressPercent ?? 0}%</span>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-surface">
+                <div className="h-full rounded-full bg-primary" style={{ width: `${Math.max(0, Math.min(100, selected.progressPercent ?? 0))}%` }} />
+              </div>
+            </div>
+          )}
           {"manifest" in selected && selected.manifest && (
             <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
               {selected.manifest.tables.map((table) => (

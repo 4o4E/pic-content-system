@@ -93,7 +93,6 @@ export function resolveSourceProfile(source: SourceBindingDto | undefined): Sour
       messageId: source.messageId,
       fileId: source.fileId,
       displayName: stringFromRaw(raw, ["displayName", "nickname", "nick", "senderName", "sendNickName", "sendMemberName"]),
-      avatarUrl: stringFromRaw(raw, ["avatarUrl", "avatar", "senderAvatarUrl"]),
       groupName: stringFromRaw(raw, ["groupName", "peerName"]),
     };
   }

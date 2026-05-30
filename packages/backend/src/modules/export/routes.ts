@@ -25,7 +25,8 @@ import {
 export async function registerDataExportRoutes(app: FastifyInstance, config: AppConfig) {
   await app.register(multipart, {
     limits: {
-      fileSize: config.maxRequestBodyBytes,
+      // 导出包可能包含完整对象目录，上传导入不能沿用普通 JSON 请求体限制。
+      fileSize: Number.POSITIVE_INFINITY,
     },
   });
 
@@ -51,7 +52,7 @@ export async function registerDataExportRoutes(app: FastifyInstance, config: App
   });
 
   app.post<{ Reply: ApiResp<DataExportDetailDto> }>("/api/exports/upload", async (request, reply) => {
-    const file = await request.file();
+    const file = await request.file({ limits: { fileSize: Number.POSITIVE_INFINITY }, throwFileSizeLimit: false });
     if (!file) return reply.code(400).send({ success: false, message: "请上传导出 zip 文件" });
     if (!file.filename.toLowerCase().endsWith(".zip")) return reply.code(400).send({ success: false, message: "只能上传 zip 文件" });
     try {

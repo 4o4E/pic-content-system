@@ -18,10 +18,11 @@ import type {
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma.js";
 import { nextSnowflakeId } from "../../lib/snowflake.js";
-import { contentSign, fileMd5FromElement, inferContentType, normalizeIds } from "./media-utils.js";
+import { contentSign, fileMd5FromElement, flattenChatRecordElements, inferContentType, normalizeIds } from "./media-utils.js";
 import { toMediaContentDto } from "./mapper.js";
 import { resolveTagAliases, syncContentTags } from "../tag/tag-service.js";
 import { writeSourceBinding } from "../source/source-service.js";
+import { writeAuditEvent } from "../audit/audit-service.js";
 
 function parseTags(value: string | undefined) {
   return value?.split(",").map((tag) => tag.trim()).filter(Boolean) ?? [];
@@ -134,6 +135,9 @@ export async function registerMediaRoutes(app: FastifyInstance) {
     const tags = await resolveTagAliases(prisma, request.body.tags);
     if (tags.length === 0) return reply.code(400).send({ success: false, message: "请至少添加一个 tag 后再提交" });
     const content = await prisma.$transaction(async (tx) => {
+      const existing = await tx.mediaContent.findUnique({ where: { sign } });
+      const auditRequired = request.body.auditRequired ?? false;
+      const nextAuditState = existing?.auditState === "approved" && auditRequired ? "approved" : auditRequired ? "pending" : "approved";
       const row = await tx.mediaContent.upsert({
         where: { sign },
         create: {
@@ -143,17 +147,34 @@ export async function registerMediaRoutes(app: FastifyInstance) {
           tags,
           elements: elements as unknown as Prisma.InputJsonValue,
           sign,
-          auditState: "approved",
+          auditState: nextAuditState,
         },
         update: {
           title: request.body.title,
           tags,
           elements: elements as unknown as Prisma.InputJsonValue,
+          auditState: nextAuditState,
         },
       });
 
       await syncContentTags(tx, row.id, tags);
       await writeSourceBinding(tx, row.id, elements, request.body.source);
+      await writeAuditEvent(tx, {
+        contentId: row.id,
+        action: "submit",
+        fromState: existing?.auditState,
+        toState: row.auditState,
+        body: {
+          operator: request.body.source
+            ? {
+                platform: request.body.source.platform,
+                userId: request.body.source.userId,
+                raw: request.body.source.raw,
+              }
+            : undefined,
+          reason: auditRequired ? "提交审核" : "跳过审核",
+        },
+      });
       if (assetIds.length > 0) {
         await tx.mediaAsset.updateMany({
           where: { id: { in: assetIds } },
@@ -228,7 +249,7 @@ export async function registerMediaRoutes(app: FastifyInstance) {
 
   app.post<{ Body: BatchMergeMediaContentsDto; Reply: ApiResp<MediaContentDto> }>("/api/media/merge", async (request, reply) => {
     const ids = normalizeIds(request.body.ids);
-    if (ids.length < 2) return reply.code(400).send({ success: false, message: "至少选择 2 条内容才能合并" });
+    if (ids.length === 0) return reply.code(400).send({ success: false, message: "请先选择要合并的内容" });
 
     const merged = await prisma.$transaction(async (tx) => {
       const contents = await tx.mediaContent.findMany({
@@ -239,16 +260,20 @@ export async function registerMediaRoutes(app: FastifyInstance) {
       const orderedContents = ids.map((id) => contentById.get(id));
       if (orderedContents.some((content) => !content)) return undefined;
 
-      const elements = orderedContents.flatMap((content) => {
+      const rawElements = orderedContents.flatMap((content) => {
         const value = content?.elements;
         return Array.isArray(value) ? (value as unknown as MediaElement[]) : [];
       });
+      const normalized = flattenChatRecordElements(rawElements);
+      if (ids.length < 2 && !normalized.hasChatRecord) return { error: "至少选择 2 条内容才能合并，或选择 1 条聊天记录转换为复合内容" };
+      if (normalized.unsupportedReason) return { error: normalized.unsupportedReason };
+      const elements = normalized.elements;
       if (elements.length === 0) return null;
 
       const tags = Array.from(new Set(orderedContents.flatMap((content) => content?.tags ?? [])));
       const sign = contentSign(elements);
       const existing = await tx.mediaContent.findUnique({ where: { sign } });
-      const mergedTitle = `合并内容（${ids.length} 条）`;
+      const mergedTitle = ids.length === 1 && normalized.hasChatRecord ? "聊天记录转复合内容" : `合并内容（${ids.length} 条）`;
       const row = existing
         ? await tx.mediaContent.update({
             where: { id: existing.id },
@@ -287,6 +312,7 @@ export async function registerMediaRoutes(app: FastifyInstance) {
 
     if (merged === undefined) return reply.code(404).send({ success: false, message: "选中的内容不存在或已被删除" });
     if (merged === null) return reply.code(400).send({ success: false, message: "选中的内容没有可合并元素" });
+    if ("error" in merged) return reply.code(400).send({ success: false, message: merged.error });
 
     const row = await prisma.mediaContent.findUnique({ where: { id: merged.id }, include: { sources: true } });
     return { success: true, message: "ok", data: toMediaContentDto(row ?? merged) };

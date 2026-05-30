@@ -249,6 +249,13 @@ function collectImageElements(elements: MediaElement[]): Array<Extract<MediaElem
   });
 }
 
+function hasChatRecordElement(elements: MediaElement[]): boolean {
+  return elements.some((element) => {
+    if (element.type === "speak" || element.type === "discuss") return true;
+    return false;
+  });
+}
+
 function imagePreviewSrc(element: MediaElement) {
   return element.type === "image" ? fileUrl(element.id) : "";
 }
@@ -1522,6 +1529,7 @@ function ContentLibraryPage({
     .map(([name, count]) => ({ name, count }));
   const tagsPresentOnEverySelectedContent = selectedContentTags.filter((tag) => tag.count === selectedContents.length).map((tag) => tag.name);
   const addableTags = tags.filter((tag) => !tagsPresentOnEverySelectedContent.includes(tag.name));
+  const canMergeSelectedContents = selectedContentIds.length >= 2 || (selectedContentIds.length === 1 && selectedContents.some((content) => hasChatRecordElement(content.elements)));
   const visibleTagSuggestions = tagQuery.trim()
     ? tagSuggestions.filter((tag) => !selectedTags.includes(tag.name)).slice(0, 8)
     : [];
@@ -1748,10 +1756,11 @@ function ContentLibraryPage({
   }
 
   async function mergeSelectedContents() {
-    if (selectedContentIds.length < 2) return;
+    if (!canMergeSelectedContents) return;
     try {
       await mergeMediaContents({ ids: selectedContentIds });
       setSelectedContentIds([]);
+      setError("");
       await refreshContents();
       setTags(await listTags());
     } catch (cause) {
@@ -1936,9 +1945,9 @@ function ContentLibraryPage({
                 <FolderInput className="h-4 w-4" />
                 放回工作台
               </Button>
-              <Button variant="secondary" disabled={selectedContentIds.length < 2} onClick={() => void mergeSelectedContents()}>
+              <Button variant="secondary" disabled={!canMergeSelectedContents} onClick={() => void mergeSelectedContents()}>
                 <Combine className="h-4 w-4" />
-                合并
+                {selectedContentIds.length === 1 ? "转复合" : "合并"}
               </Button>
               <Button variant={pendingDeleteConfirm ? "danger" : "secondary"} onClick={() => void submitBatchDelete()}>
                 <Trash2 className="h-4 w-4" />

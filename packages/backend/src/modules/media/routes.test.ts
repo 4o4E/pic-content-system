@@ -141,6 +141,74 @@ describe("media routes", () => {
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 
+  it("创建正式内容支持按来源提交审核", async () => {
+    const text = { type: "text", content: "测试内容" };
+    const row = contentRow({ id: "content-text", type: "text", tags: ["聊天记录"], elements: [text], auditState: "pending" });
+    const tx = {
+      tagAlias: { findMany: vi.fn().mockResolvedValue([]) },
+      mediaContent: {
+        findUnique: vi.fn().mockResolvedValue(undefined),
+        upsert: vi.fn().mockResolvedValue(row),
+      },
+      sourceBinding: {
+        findFirst: vi.fn().mockResolvedValue(undefined),
+        create: vi.fn().mockResolvedValue({ id: "source-id" }),
+      },
+      auditEvent: {
+        create: vi.fn().mockResolvedValue({ id: "audit-id" }),
+      },
+      contentTag: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+        createMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      tag: {
+        createMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
+    mockPrisma.mediaContent.findUnique.mockResolvedValue(row);
+    const app = await createMediaApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/media",
+      payload: {
+        title: "聊天记录",
+        tags: ["聊天记录"],
+        elements: [text],
+        auditRequired: true,
+        source: {
+          platform: "qq",
+          groupId: "100",
+          userId: "200",
+          messageId: "300",
+          sourceKey: "300",
+          raw: { displayName: "用户 A" },
+        },
+      },
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ success: true, data: { id: "content-text", auditState: "pending" } });
+    expect(tx.mediaContent.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ auditState: "pending" }),
+        update: expect.objectContaining({ auditState: "pending" }),
+      }),
+    );
+    expect(tx.auditEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        contentId: "content-text",
+        action: "submit",
+        toState: "pending",
+        operatorPlatform: "qq",
+        operatorUserId: "200",
+        reason: "提交审核",
+      }),
+    });
+  });
+
   it("PUT tags 替换完整 tag 集合", async () => {
     const tx = {
       tagAlias: { findMany: vi.fn().mockResolvedValue([{ alias: "dt", tag: "弔图" }]) },
@@ -242,5 +310,95 @@ describe("media routes", () => {
       }),
     });
     expect(tx.mediaContent.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ["content-b", "content-a"] } } });
+  });
+
+  it("单条聊天记录可以转为复合内容并忽略发送人", async () => {
+    const textA = { type: "text", content: "第一句" };
+    const image = { type: "image", id: "a".repeat(32), format: "png", file: false, width: 1, height: 1 };
+    const textB = { type: "text", content: "第二句" };
+    const discuss = {
+      type: "discuss",
+      content: [
+        { type: "speak", sender: { displayName: "用户 A" }, time: "2026-01-01T00:00:00Z", message: [textA, image] },
+        { type: "speak", sender: { displayName: "用户 B" }, time: "2026-01-01T00:00:01Z", message: [textB] },
+      ],
+    };
+    const row = contentRow({ id: "content-record", type: "discuss", tags: ["聊天记录"], elements: [discuss], sign: "1".repeat(32) });
+    const merged = contentRow({
+      id: "content-merged",
+      type: "composite",
+      title: "聊天记录转复合内容",
+      tags: ["聊天记录"],
+      elements: [textA, image, textB],
+      sign: "3".repeat(32),
+    });
+    const tx = {
+      mediaContent: {
+        findMany: vi.fn().mockResolvedValue([row]),
+        findUnique: vi.fn().mockResolvedValue(undefined),
+        create: vi.fn().mockResolvedValue(merged),
+        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      sourceBinding: {
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      contentTag: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+        createMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      tag: {
+        createMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
+    mockPrisma.mediaContent.findUnique.mockResolvedValue(merged);
+    const app = await createMediaApp();
+
+    const response = await app.inject({ method: "POST", url: "/api/media/merge", payload: { ids: ["content-record"] } });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ success: true, data: { id: "content-merged", type: "composite" } });
+    expect(tx.mediaContent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        title: "聊天记录转复合内容",
+        type: "composite",
+        elements: [textA, image, textB],
+      }),
+    });
+    expect(tx.mediaContent.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ["content-record"] } } });
+  });
+
+  it("聊天记录包含音频时拒绝转为复合内容", async () => {
+    const row = contentRow({
+      id: "content-record",
+      type: "discuss",
+      elements: [
+        {
+          type: "speak",
+          sender: { displayName: "用户 A" },
+          time: "2026-01-01T00:00:00Z",
+          message: [{ type: "audio", id: "a".repeat(32), format: "mp3", file: false, durationSeconds: 1 }],
+        },
+      ],
+      sign: "1".repeat(32),
+    });
+    const tx = {
+      mediaContent: {
+        findMany: vi.fn().mockResolvedValue([row]),
+        findUnique: vi.fn(),
+        create: vi.fn(),
+        deleteMany: vi.fn(),
+      },
+    };
+    mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
+    const app = await createMediaApp();
+
+    const response = await app.inject({ method: "POST", url: "/api/media/merge", payload: { ids: ["content-record"] } });
+    await app.close();
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ success: false, message: "聊天记录中包含视频或音频，不能转为复合内容" });
+    expect(tx.mediaContent.create).not.toHaveBeenCalled();
   });
 });

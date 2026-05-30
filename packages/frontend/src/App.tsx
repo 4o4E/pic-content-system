@@ -100,6 +100,12 @@ type TagRouteState = {
   size: number;
 };
 type ImagePreviewOpener = (elements: MediaElement[], activeElement: MediaElement, groups?: ImagePreviewGroup[], groupIndex?: number) => void;
+type ChatRecordElement = Extract<MediaElement, { type: "discuss" | "speak" }>;
+type ChatSpeakElement = Extract<MediaElement, { type: "speak" }>;
+type ChatStackItem = {
+  element: ChatRecordElement;
+  sourceKey: string;
+};
 type LibraryRouteState = {
   query: string;
   selectedTags: string[];
@@ -254,6 +260,14 @@ function hasChatRecordElement(elements: MediaElement[]): boolean {
     if (element.type === "speak" || element.type === "discuss") return true;
     return false;
   });
+}
+
+function isChatRecordElement(element: MediaElement): element is ChatRecordElement {
+  return element.type === "speak" || element.type === "discuss";
+}
+
+function chatRecordSpeaks(element: ChatRecordElement): ChatSpeakElement[] {
+  return element.type === "discuss" ? element.content : [element];
 }
 
 function imagePreviewSrc(element: MediaElement) {
@@ -917,6 +931,30 @@ function SingleContentPreview({ element, onOpen }: { element: MediaElement; onOp
     );
   }
 
+  if (isChatRecordElement(element)) {
+    const speaks = chatRecordSpeaks(element);
+    return (
+      <button
+        className="flex h-full min-h-0 w-full flex-col justify-between rounded-md border border-border bg-surface-muted p-4 text-left outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary"
+        onClick={() => onOpen?.(element)}
+        type="button"
+      >
+        <div className="flex items-center gap-3">
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-surface">
+            <ListChecks className="h-6 w-6 text-primary" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-foreground">聊天记录</div>
+            <div className="mt-1 text-xs text-subtle-foreground">{speaks.length} 条发言</div>
+          </div>
+        </div>
+        <div className="mt-3 line-clamp-2 text-xs leading-5 text-muted-foreground">
+          {speaks.map((speak) => speak.sender.displayName).filter(Boolean).slice(0, 4).join("、") || "未记录发送人"}
+        </div>
+      </button>
+    );
+  }
+
   return <CompositeContentPreview elements={[element]} />;
 }
 
@@ -1053,8 +1091,187 @@ function Modal({
   );
 }
 
-function MediaElementModal({ element, onClose }: { element: MediaElement; onClose: () => void }) {
+function ChatRecordMediaItem({
+  element,
+  active,
+  onOpenMedia,
+  onOpenChatRecord,
+}: {
+  element: MediaElement;
+  active?: boolean;
+  onOpenMedia: (element: MediaElement) => void;
+  onOpenChatRecord: (element: ChatRecordElement) => void;
+}) {
+  if (element.type === "text") {
+    return <div className="max-w-64 whitespace-pre-wrap rounded-md bg-white px-3 py-2 text-sm leading-6 text-[#111827] shadow-sm">{element.content}</div>;
+  }
+
+  if (element.type === "image") {
+    return (
+      <button className="block max-w-56 overflow-hidden rounded-md bg-white" type="button" onClick={() => onOpenMedia(element)}>
+        <img className="max-h-60 w-full object-contain" src={fileUrl(element.id)} alt="聊天图片" loading="lazy" />
+      </button>
+    );
+  }
+
+  if (element.type === "video") {
+    return (
+      <button className="flex aspect-video w-56 items-center justify-center rounded-md bg-black text-white" type="button" onClick={() => onOpenMedia(element)}>
+        <FileVideo className="h-9 w-9" />
+      </button>
+    );
+  }
+
+  if (element.type === "audio") {
+    return (
+      <button className="flex min-h-12 w-52 items-center gap-2 rounded-md bg-white px-3 text-left text-[#111827]" type="button" onClick={() => onOpenMedia(element)}>
+        <FileAudio className="h-5 w-5 text-primary" />
+        <span className="truncate text-sm">语音消息</span>
+      </button>
+    );
+  }
+
+  if (element.type === "file") {
+    return (
+      <button className="flex min-h-12 w-56 items-center gap-2 rounded-md bg-white px-3 text-left text-[#111827]" type="button" onClick={() => onOpenMedia(element)}>
+        <FileText className="h-5 w-5 text-primary" />
+        <span className="truncate text-sm">文件</span>
+      </button>
+    );
+  }
+
+  return (
+    <button
+      className={cn(
+        "flex w-60 items-center justify-between gap-3 rounded-md border bg-white px-3 py-2 text-left text-[#111827] shadow-sm transition-colors",
+        active ? "border-primary ring-2 ring-primary/30" : "border-[#d7dbe2] hover:border-primary/40",
+      )}
+      type="button"
+      onClick={() => onOpenChatRecord(element)}
+    >
+      <span className="min-w-0">
+        <span className="block text-sm font-medium">聊天记录</span>
+        <span className="mt-1 block truncate text-xs text-[#6b7280]">{chatRecordSpeaks(element).length} 条发言</span>
+      </span>
+      <ChevronDown className={cn("h-4 w-4 shrink-0 -rotate-90", active && "text-primary")} />
+    </button>
+  );
+}
+
+function ChatRecordPanel({
+  item,
+  index,
+  nextItem,
+  onOpenMedia,
+  onOpenChatRecord,
+}: {
+  item: ChatStackItem;
+  index: number;
+  nextItem?: ChatStackItem;
+  onOpenMedia: (element: MediaElement) => void;
+  onOpenChatRecord: (panelIndex: number, sourceKey: string, element: ChatRecordElement) => void;
+}) {
+  const speaks = chatRecordSpeaks(item.element);
+  return (
+    <section className="flex h-full w-[22rem] shrink-0 flex-col overflow-hidden rounded-md border border-[#c9d0da] bg-[#f2f3f5] shadow-sm">
+      <div className="flex h-12 shrink-0 items-center justify-center border-b border-[#d5dbe3] bg-[#eef0f3] px-4">
+        <div className="min-w-0 text-center">
+          <div className="truncate text-sm font-semibold text-[#111827]">{index === 0 ? "聊天记录" : `嵌套记录 ${index}`}</div>
+          <div className="text-xs text-[#6b7280]">{speaks.length} 条发言</div>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
+        <div className="space-y-4">
+          {speaks.map((speak, speakIndex) => (
+            <div key={`${speak.time}-${speakIndex}-${speak.sender.displayName}`} className="flex items-start gap-2">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[#dfe5ec] text-xs font-semibold text-[#475569]">
+                {speak.sender.displayName.slice(0, 1) || "?"}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="mb-1 flex items-center gap-2 text-xs text-[#6b7280]">
+                  <span className="max-w-36 truncate">{speak.sender.displayName || "未知用户"}</span>
+                  <span>{formatDateTime(speak.time)}</span>
+                </div>
+                <div className="flex flex-col items-start gap-2">
+                  {speak.message.map((message, messageIndex) => {
+                    const sourceKey = `${speakIndex}-${messageIndex}-${elementSummary(message)}`;
+                    return (
+                      <div key={sourceKey} className="max-w-full">
+                        <ChatRecordMediaItem
+                          element={message}
+                          active={nextItem?.sourceKey === sourceKey}
+                          onOpenMedia={onOpenMedia}
+                          onOpenChatRecord={(nestedElement) => onOpenChatRecord(index, sourceKey, nestedElement)}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          ))}
+          {speaks.length === 0 && <div className="rounded-md bg-white p-4 text-center text-sm text-[#6b7280]">这条聊天记录没有发言。</div>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ChatRecordModal({
+  element,
+  onClose,
+  onOpenElement,
+}: {
+  element: ChatRecordElement;
+  onClose: () => void;
+  onOpenElement?: (element: MediaElement) => void;
+}) {
+  const [stack, setStack] = useState<ChatStackItem[]>([{ element, sourceKey: "root" }]);
+  const [localPreviewElement, setLocalPreviewElement] = useState<MediaElement | null>(null);
+
+  useEffect(() => {
+    setStack([{ element, sourceKey: "root" }]);
+    setLocalPreviewElement(null);
+  }, [element]);
+
+  function openMedia(mediaElement: MediaElement) {
+    if (mediaElement.type === "image") {
+      onOpenElement?.(mediaElement);
+      return;
+    }
+    setLocalPreviewElement(mediaElement);
+  }
+
+  function openChatRecord(panelIndex: number, sourceKey: string, chatElement: ChatRecordElement) {
+    setStack((current) => [...current.slice(0, panelIndex + 1), { element: chatElement, sourceKey }]);
+  }
+
+  return (
+    <Modal title="聊天记录" subtitle={`${chatRecordSpeaks(element).length} 条发言`} closeLabel="关闭聊天记录" zIndex="z-[1000]" maxWidth="max-w-[96vw]" onClose={onClose}>
+      <div className="min-h-0 overflow-x-auto bg-surface-muted p-4">
+        <div className="flex h-[calc(92vh-5rem)] min-w-max gap-4">
+          {stack.map((item, index) => (
+            <ChatRecordPanel
+              key={`${index}-${item.sourceKey}`}
+              item={item}
+              index={index}
+              nextItem={stack[index + 1]}
+              onOpenMedia={openMedia}
+              onOpenChatRecord={openChatRecord}
+            />
+          ))}
+        </div>
+      </div>
+      {localPreviewElement && !isChatRecordElement(localPreviewElement) && (
+        <MediaElementModal element={localPreviewElement} onClose={() => setLocalPreviewElement(null)} onOpenElement={onOpenElement} />
+      )}
+    </Modal>
+  );
+}
+
+function MediaElementModal({ element, onClose, onOpenElement }: { element: MediaElement; onClose: () => void; onOpenElement?: (element: MediaElement) => void }) {
   if (element.type === "image") return null;
+  if (isChatRecordElement(element)) return <ChatRecordModal element={element} onClose={onClose} onOpenElement={onOpenElement} />;
   const subtitle = "id" in element ? element.id : undefined;
   return (
     <Modal title={`${elementToken(element)}预览`} subtitle={subtitle} closeLabel="关闭预览" onClose={onClose}>
@@ -1136,6 +1353,15 @@ function ContentDetailModal({
                   <button className="flex min-h-28 w-full items-center gap-3 rounded-md bg-surface p-4 text-left" type="button" onClick={() => onOpenElement(element)}>
                     <FileText className="h-8 w-8 text-primary" />
                     <span className="min-w-0 truncate font-mono text-xs text-subtle-foreground">{element.id}</span>
+                  </button>
+                )}
+                {isChatRecordElement(element) && (
+                  <button className="flex min-h-28 w-full items-center gap-3 rounded-md bg-surface p-4 text-left" type="button" onClick={() => onOpenElement(element)}>
+                    <ListChecks className="h-8 w-8 text-primary" />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-medium text-foreground">聊天记录</span>
+                      <span className="mt-1 block text-xs text-subtle-foreground">{chatRecordSpeaks(element).length} 条发言</span>
+                    </span>
                   </button>
                 )}
               </div>
@@ -2056,7 +2282,7 @@ function ContentLibraryPage({
         </Button>
       )}
       {previewContent && <ContentDetailModal content={previewContent} onClose={() => setPreviewContent(null)} onOpenElement={(element) => openElementPreview(element, previewContent.elements)} />}
-      {previewElement && <MediaElementModal element={previewElement} onClose={() => setPreviewElement(null)} />}
+      {previewElement && <MediaElementModal element={previewElement} onClose={() => setPreviewElement(null)} onOpenElement={(element) => openElementPreview(element, previewContent?.elements ?? [previewElement])} />}
     </section>
   );
 }
@@ -2245,7 +2471,7 @@ function PicApiPreviewPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePr
         </>
       )}
       {previewContent && <ContentDetailModal content={previewContent} onClose={() => setPreviewContent(null)} onOpenElement={(element) => openElementPreview(element, previewContent.elements)} />}
-      {previewElement && <MediaElementModal element={previewElement} onClose={() => setPreviewElement(null)} />}
+      {previewElement && <MediaElementModal element={previewElement} onClose={() => setPreviewElement(null)} onOpenElement={(element) => openElementPreview(element, previewContent?.elements ?? [previewElement])} />}
     </section>
   );
 }
@@ -2439,7 +2665,7 @@ function AuditsPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePreviewOp
       </div>
       {items.length === 0 && <Card className="p-8 text-center text-sm text-muted-foreground">没有符合条件的审批内容。</Card>}
       {previewContent && <ContentDetailModal content={previewContent} onClose={() => setPreviewContent(null)} onOpenElement={(element) => openElementPreview(element, previewContent.elements)} />}
-      {previewElement && <MediaElementModal element={previewElement} onClose={() => setPreviewElement(null)} />}
+      {previewElement && <MediaElementModal element={previewElement} onClose={() => setPreviewElement(null)} onOpenElement={(element) => openElementPreview(element, previewContent?.elements ?? [previewElement])} />}
       {auditDetail && <AuditLogModal detail={auditDetail} onClose={() => setAuditDetail(null)} />}
     </section>
   );

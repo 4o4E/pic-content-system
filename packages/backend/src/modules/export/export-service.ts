@@ -20,6 +20,7 @@ import * as yauzl from "yauzl";
 import type { AppConfig } from "../../config/env.js";
 import { prisma } from "../../db/prisma.js";
 import { nextSnowflakeId } from "../../lib/snowflake.js";
+import { assetFileReferences, collectFileReferencesFromElements, replaceMediaFileReferences } from "../file/file-reference-service.js";
 
 const SCHEMA_VERSION = 1;
 const MANIFEST_ENTRY = "manifest.json";
@@ -973,11 +974,12 @@ async function importDatabaseRecords(bundle: LoadedBundle, conflictPolicy: DataI
     const existingById = await prisma.mediaContent.findUnique({ where: { id: row.id } });
     const existingBySign = await prisma.mediaContent.findUnique({ where: { sign: row.sign } });
     const existing = existingById ?? existingBySign;
+    const elements = jsonArrayInput(row.elements);
     const data = {
       type: row.type,
       title: row.title,
       tags: row.tags,
-      elements: jsonArrayInput(row.elements),
+      elements,
       sign: row.sign,
       auditState: row.auditState,
       likeCount: BigInt(row.likeCount),
@@ -991,6 +993,7 @@ async function importDatabaseRecords(bundle: LoadedBundle, conflictPolicy: DataI
       affectedContentIds.add(existing.id);
       if (conflictPolicy === "overwrite" && existing.sign === row.sign) {
         await prisma.mediaContent.update({ where: { id: existing.id }, data });
+        await replaceMediaFileReferences(prisma, "media_content", existing.id, collectFileReferencesFromElements(elements));
         tables.media_content.updated++;
       } else {
         if (existingById && existingById.sign !== row.sign && !existingBySign) {
@@ -1004,6 +1007,7 @@ async function importDatabaseRecords(bundle: LoadedBundle, conflictPolicy: DataI
     }
 
     await prisma.mediaContent.create({ data: { id: row.id, ...data } });
+    await replaceMediaFileReferences(prisma, "media_content", row.id, collectFileReferencesFromElements(elements));
     contentIdMap.set(row.id, row.id);
     affectedContentIds.add(row.id);
     tables.media_content.created++;
@@ -1052,10 +1056,11 @@ async function importDatabaseRecords(bundle: LoadedBundle, conflictPolicy: DataI
     const existing = await prisma.mediaAsset.findUnique({ where: { id: row.id } });
     const fileMd5 = row.fileMd5 && (await prisma.mediaFile.findUnique({ where: { md5: row.fileMd5 } })) ? row.fileMd5 : null;
     const sourceId = resolveMappedId(sourceIdMap, row.sourceId);
+    const element = jsonInput(row.element);
     const data = {
       kind: row.kind,
       fileMd5,
-      element: jsonInput(row.element),
+      element,
       sourceId,
       status: row.status,
       metadata: jsonInput(row.metadata),
@@ -1065,22 +1070,25 @@ async function importDatabaseRecords(bundle: LoadedBundle, conflictPolicy: DataI
     if (existing) {
       if (conflictPolicy === "overwrite") {
         await prisma.mediaAsset.update({ where: { id: row.id }, data });
+        await replaceMediaFileReferences(prisma, "media_asset", row.id, assetFileReferences({ fileMd5, element, kind: row.kind }));
         tables.media_asset.updated++;
       } else {
         tables.media_asset.skipped++;
       }
     } else {
       await prisma.mediaAsset.create({ data: { id: row.id, ...data } });
+      await replaceMediaFileReferences(prisma, "media_asset", row.id, assetFileReferences({ fileMd5, element, kind: row.kind }));
       tables.media_asset.created++;
     }
   }
 
   for (const row of rows<ExportWorkspaceDraft>(bundle.records, "workspace_draft")) {
     const existing = await prisma.workspaceDraft.findUnique({ where: { id: row.id } });
+    const elements = jsonArrayInput(row.elements);
     const data = {
       title: row.title,
       tags: row.tags,
-      elements: jsonArrayInput(row.elements),
+      elements,
       assetIds: row.assetIds,
       status: row.status,
       metadata: jsonInput(row.metadata),
@@ -1090,12 +1098,14 @@ async function importDatabaseRecords(bundle: LoadedBundle, conflictPolicy: DataI
     if (existing) {
       if (conflictPolicy === "overwrite") {
         await prisma.workspaceDraft.update({ where: { id: row.id }, data });
+        await replaceMediaFileReferences(prisma, "workspace_draft", row.id, collectFileReferencesFromElements(elements));
         tables.workspace_draft.updated++;
       } else {
         tables.workspace_draft.skipped++;
       }
     } else {
       await prisma.workspaceDraft.create({ data: { id: row.id, ...data } });
+      await replaceMediaFileReferences(prisma, "workspace_draft", row.id, collectFileReferencesFromElements(elements));
       tables.workspace_draft.created++;
     }
   }

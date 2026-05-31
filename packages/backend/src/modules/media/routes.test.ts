@@ -20,6 +20,11 @@ const mockPrisma = vi.hoisted(() => ({
     deleteMany: vi.fn(),
     createMany: vi.fn(),
   },
+  mediaFileReference: {
+    findMany: vi.fn(),
+    deleteMany: vi.fn(),
+    createMany: vi.fn(),
+  },
   $queryRaw: vi.fn(),
   $transaction: vi.fn(),
 }));
@@ -43,6 +48,13 @@ function contentRow(overrides: Record<string, unknown> = {}) {
     updatedAt: time,
     sources: [],
     ...overrides,
+  };
+}
+
+function mediaFileReferenceDelegate() {
+  return {
+    deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+    createMany: vi.fn().mockResolvedValue({ count: 0 }),
   };
 }
 
@@ -112,7 +124,7 @@ describe("media routes", () => {
   });
 
   it("按文件反查返回匹配内容", async () => {
-    mockPrisma.$queryRaw.mockResolvedValue([{ id: "content-id" }]);
+    mockPrisma.mediaFileReference.findMany.mockResolvedValue([{ ownerId: "content-id" }]);
     mockPrisma.mediaContent.findMany.mockResolvedValue([contentRow({ id: "content-id" })]);
     const app = await createMediaApp();
 
@@ -164,6 +176,7 @@ describe("media routes", () => {
       tag: {
         createMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
+      mediaFileReference: mediaFileReferenceDelegate(),
     };
     mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
     mockPrisma.mediaContent.findUnique.mockResolvedValue(row);
@@ -247,6 +260,7 @@ describe("media routes", () => {
       tag: {
         createMany: vi.fn().mockResolvedValue({ count: 2 }),
       },
+      mediaFileReference: mediaFileReferenceDelegate(),
     };
     mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
     mockPrisma.mediaContent.findUnique.mockResolvedValue(contentRow({ id: "content-id", tags: ["保留", "新tag"] }));
@@ -292,6 +306,7 @@ describe("media routes", () => {
       tag: {
         createMany: vi.fn().mockResolvedValue({ count: 2 }),
       },
+      mediaFileReference: mediaFileReferenceDelegate(),
     };
     mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
     mockPrisma.mediaContent.findUnique.mockResolvedValue(merged);
@@ -349,6 +364,7 @@ describe("media routes", () => {
       tag: {
         createMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
+      mediaFileReference: mediaFileReferenceDelegate(),
     };
     mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
     mockPrisma.mediaContent.findUnique.mockResolvedValue(merged);

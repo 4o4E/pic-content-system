@@ -10,6 +10,9 @@ import type {
   MediaAssetStatus,
   MediaContentDto,
   MediaElement,
+  MediaFileReferenceItemDto,
+  MediaFileReferenceMode,
+  MediaFileReferenceStatsDto,
   MediaType,
   PicContentItemDto,
   SourceProfileDto,
@@ -17,7 +20,7 @@ import type {
   WorkspaceDraftDto,
 } from "@pic/shared";
 import type { LucideIcon } from "lucide-react";
-import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   Archive,
@@ -38,6 +41,7 @@ import {
   Image,
   LayoutDashboard,
   Layers3,
+  Link2,
   ListChecks,
   Moon,
   MoreHorizontal,
@@ -75,7 +79,9 @@ import {
   deleteMediaContents,
   deleteTag,
   deleteTagAlias,
+  deleteUnreferencedFiles,
   fileUrl,
+  getMediaContent,
   getDataExport,
   getAuditDetail,
   getStoredToken,
@@ -85,6 +91,7 @@ import {
   listAudits,
   listDataExports,
   listIngestEvents,
+  listFileReferences,
   listMedia,
   listPicHot,
   listPicLatest,
@@ -103,7 +110,7 @@ import {
 } from "@/api/client";
 
 type ThemeMode = "light" | "dark";
-type PageKey = "home" | "workspace" | "library" | "pic" | "audits" | "events" | "tags" | "exports";
+type PageKey = "home" | "workspace" | "library" | "pic" | "audits" | "events" | "tags" | "references" | "exports";
 type TagMode = "and" | "or";
 type ContentCardSize = "small" | "medium" | "large";
 type LibrarySort = "time_desc" | "time_asc" | "like_desc" | "like_asc";
@@ -148,6 +155,7 @@ const pageItems: Array<{ key: PageKey; label: string; icon: LucideIcon }> = [
   { key: "audits", label: "审批管理", icon: CheckCircle2 },
   { key: "events", label: "接入事件", icon: ListChecks },
   { key: "tags", label: "标签管理", icon: Tags },
+  { key: "references", label: "引用管理", icon: Link2 },
   { key: "exports", label: "导入导出", icon: FileArchive },
 ];
 
@@ -197,6 +205,12 @@ const tagSortOptions: Array<{ label: string; value: TagSort }> = [
   { label: "创建时间正序", value: "time_asc" },
 ];
 
+const fileReferenceModeOptions: Array<{ label: string; value: MediaFileReferenceMode }> = [
+  { label: "多次引用", value: "multiple" },
+  { label: "无引用", value: "unreferenced" },
+  { label: "全部文件", value: "all" },
+];
+
 const defaultLibraryPage = 1;
 const defaultLibraryPageSize = 100;
 const defaultLibrarySort: LibrarySort = "time_desc";
@@ -213,6 +227,7 @@ const pagePaths: Record<PageKey, string> = {
   audits: "/audits",
   events: "/events",
   tags: "/tags",
+  references: "/references",
   exports: "/exports",
 };
 
@@ -491,6 +506,19 @@ function elementLabel(element: MediaElement) {
     case "discuss":
       return "聊天记录";
   }
+}
+
+function fileReferenceOwnerLabel(ownerType: MediaFileReferenceItemDto["references"][number]["ownerType"]) {
+  return ownerType === "media_content" ? "内容" : ownerType === "media_asset" ? "素材" : "草稿";
+}
+
+function mediaFilePreviewType(file: MediaFileReferenceItemDto): Extract<MediaType, "image" | "video" | "audio" | "file"> {
+  const mimeType = file.mimeType?.toLowerCase() ?? "";
+  const format = file.format?.toLowerCase() ?? "";
+  if (mimeType.startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp"].includes(format)) return "image";
+  if (mimeType.startsWith("video/") || ["mp4", "webm", "mov", "mkv"].includes(format)) return "video";
+  if (mimeType.startsWith("audio/") || ["mp3", "wav", "ogg", "flac", "m4a"].includes(format)) return "audio";
+  return "file";
 }
 
 function textPreview(content: string) {
@@ -3198,6 +3226,370 @@ function EventsPage() {
   );
 }
 
+function FileReferenceStatCards({ stats }: { stats: MediaFileReferenceStatsDto }) {
+  const items = [
+    { label: "总文件", value: stats.fileCount },
+    { label: "总引用", value: stats.referenceCount },
+    { label: "被引用文件", value: stats.referencedFileCount },
+    { label: "多次引用", value: stats.multiReferencedFileCount },
+    { label: "无引用", value: stats.unreferencedFileCount },
+  ];
+
+  return (
+    <div className="grid gap-3 md:grid-cols-5">
+      {items.map((item) => (
+        <Card key={item.label} className="p-4">
+          <div className="text-xs text-muted-foreground">{item.label}</div>
+          <div className="mt-2 text-2xl font-semibold tabular-nums">{item.value}</div>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function mediaFileToElement(file: MediaFileReferenceItemDto): Extract<MediaElement, { type: "image" | "video" | "audio" | "file" }> {
+  const type = mediaFilePreviewType(file);
+  return { type, id: file.md5 } as Extract<MediaElement, { type: "image" | "video" | "audio" | "file" }>;
+}
+
+function FileReferencePreview({ file, onOpen }: { file: MediaFileReferenceItemDto; onOpen: (file: MediaFileReferenceItemDto) => void }) {
+  const previewType = mediaFilePreviewType(file);
+  const src = fileUrl(file.md5);
+
+  if (previewType === "image") {
+    return (
+      <button
+        className="block h-16 w-20 overflow-hidden rounded-md border border-border bg-surface-muted outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary"
+        type="button"
+        onClick={() => onOpen(file)}
+        aria-label="预览图片文件"
+      >
+        <img className="h-full w-full object-cover" src={src} alt="文件预览" loading="lazy" />
+      </button>
+    );
+  }
+
+  if (previewType === "video") {
+    return (
+      <button
+        className="relative h-16 w-28 overflow-hidden rounded-md border border-border bg-black text-white outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary"
+        type="button"
+        onClick={() => onOpen(file)}
+        aria-label="预览视频文件"
+      >
+        <video className="h-full w-full object-contain" src={src} muted preload="metadata" playsInline />
+        <FileVideo className="absolute left-1/2 top-1/2 h-6 w-6 -translate-x-1/2 -translate-y-1/2 drop-shadow" />
+      </button>
+    );
+  }
+
+  if (previewType === "audio") {
+    return (
+      <button
+        className="flex h-16 w-44 items-center gap-2 rounded-md border border-border bg-surface-muted px-3 text-left outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary"
+        type="button"
+        onClick={() => onOpen(file)}
+        aria-label="预览音频文件"
+      >
+        <FileAudio className="h-5 w-5 shrink-0 text-primary" />
+        <span className="min-w-0 truncate text-xs text-muted-foreground">音频文件</span>
+      </button>
+    );
+  }
+
+  return (
+    <button
+      className="flex h-16 w-20 items-center justify-center rounded-md border border-border bg-surface-muted outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary"
+      type="button"
+      onClick={() => onOpen(file)}
+      aria-label="预览普通文件"
+    >
+      <FileText className="h-5 w-5 text-primary" />
+    </button>
+  );
+}
+
+function FileReferenceRow({
+  file,
+  selectable,
+  selected,
+  onToggle,
+  onOpenFile,
+  onOpenReference,
+}: {
+  file: MediaFileReferenceItemDto;
+  selectable: boolean;
+  selected: boolean;
+  onToggle: (md5: string) => void;
+  onOpenFile: (file: MediaFileReferenceItemDto) => void;
+  onOpenReference: (reference: MediaFileReferenceItemDto["references"][number]) => void;
+}) {
+  const visibleReferences = file.references.slice(0, 5);
+
+  return (
+    <div
+      className={cn(
+        "grid gap-3 border-b border-border px-4 py-3 text-sm last:border-b-0 xl:grid-cols-[32px_minmax(300px,1fr)_90px_110px_150px_minmax(280px,1.2fr)] xl:items-center",
+        selected && "bg-primary-muted/30",
+      )}
+    >
+      <div className="flex items-center">
+        {selectable ? (
+          <input className="h-4 w-4 accent-[var(--primary)]" type="checkbox" checked={selected} aria-label="选择无引用文件" onChange={() => onToggle(file.md5)} />
+        ) : (
+          <span className="h-4 w-4" />
+        )}
+      </div>
+      <div className="flex min-w-0 items-center gap-3">
+        <FileReferencePreview file={file} onOpen={onOpenFile} />
+        <div className="min-w-0">
+          <div className="truncate font-mono text-xs font-medium">{file.md5}</div>
+          <div className="mt-1 truncate text-xs text-subtle-foreground">{file.storageKey}</div>
+        </div>
+      </div>
+      <Badge className="w-fit">{file.format ?? "bin"}</Badge>
+      <span className="tabular-nums text-muted-foreground">{formatBytes(file.sizeBytes)}</span>
+      <div className={cn("text-sm tabular-nums", file.ownerCount === 0 ? "text-amber-600 dark:text-amber-400" : "text-foreground")}>
+        <div>{file.ownerCount} 个对象</div>
+        <div className="text-xs text-subtle-foreground">{file.referenceCount} 条路径</div>
+      </div>
+      <div className="flex min-w-0 flex-wrap gap-1">
+        {visibleReferences.map((reference) => (
+          <button
+            key={`${reference.ownerType}-${reference.ownerId}-${reference.refPath}`}
+            className={cn(
+              "inline-flex max-w-full items-center gap-1 rounded-md border border-border bg-surface-muted px-2 py-1 text-left text-xs outline-none transition-colors",
+              reference.ownerType === "media_content" ? "hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary" : "cursor-default",
+            )}
+            type="button"
+            disabled={reference.ownerType !== "media_content"}
+            onClick={() => onOpenReference(reference)}
+            title={reference.ownerType === "media_content" ? "预览引用内容" : "当前引用来源暂不支持预览"}
+          >
+            <span className="shrink-0 text-muted-foreground">{fileReferenceOwnerLabel(reference.ownerType)}</span>
+            <span className="min-w-0 truncate font-mono">{reference.ownerId}</span>
+            <span className="shrink-0 text-subtle-foreground">{reference.elementType ?? "file"}</span>
+          </button>
+        ))}
+        {file.references.length > visibleReferences.length && <span className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground">+{file.references.length - visibleReferences.length}</span>}
+        {file.references.length === 0 && <span className="text-xs text-amber-600 dark:text-amber-400">未被引用</span>}
+      </div>
+    </div>
+  );
+}
+
+function FileReferencesPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePreviewOpener }) {
+  const [mode, setMode] = useState<MediaFileReferenceMode>("unreferenced");
+  const [query, setQuery] = useState("");
+  const [keyword, setKeyword] = useState("");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(100);
+  const [stats, setStats] = useState<MediaFileReferenceStatsDto>({
+    fileCount: 0,
+    referencedFileCount: 0,
+    unreferencedFileCount: 0,
+    multiReferencedFileCount: 0,
+    referenceCount: 0,
+  });
+  const [files, setFiles] = useState<MediaFileReferenceItemDto[]>([]);
+  const [total, setTotal] = useState(0);
+  const [selectedMd5s, setSelectedMd5s] = useState<string[]>([]);
+  const [pendingDeleteConfirm, setPendingDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [previewContent, setPreviewContent] = useState<MediaContentDto | null>(null);
+  const [previewElement, setPreviewElement] = useState<MediaElement | null>(null);
+  const [previewingOwnerId, setPreviewingOwnerId] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const selectableFiles = mode === "unreferenced" ? files.filter((file) => file.ownerCount === 0 && file.referenceCount === 0) : [];
+  const allCurrentSelected = selectableFiles.length > 0 && selectableFiles.every((file) => selectedMd5s.includes(file.md5));
+
+  async function refreshReferences() {
+    setLoading(true);
+    try {
+      const result = await listFileReferences({ mode, q: keyword, page: currentPage, size: pageSize });
+      setStats(result.stats);
+      setFiles(result.files.data);
+      setTotal(result.files.total);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "加载文件引用失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void refreshReferences();
+  }, [currentPage, keyword, mode, pageSize]);
+
+  useEffect(() => {
+    const visibleMd5s = new Set(files.map((file) => file.md5));
+    setSelectedMd5s((current) => current.filter((md5) => visibleMd5s.has(md5)));
+  }, [files]);
+
+  useEffect(() => {
+    setSelectedMd5s([]);
+    setPendingDeleteConfirm(false);
+  }, [mode, keyword]);
+
+  function submitSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCurrentPage(1);
+    setKeyword(query.trim());
+  }
+
+  function changeMode(nextMode: MediaFileReferenceMode) {
+    setMode(nextMode);
+    setCurrentPage(1);
+  }
+
+  function changePageSize(size: number) {
+    setPageSize(size);
+    setCurrentPage(1);
+  }
+
+  function toggleFile(md5: string) {
+    setPendingDeleteConfirm(false);
+    setSelectedMd5s((current) => (current.includes(md5) ? current.filter((item) => item !== md5) : [...current, md5]));
+  }
+
+  function toggleCurrentPage() {
+    setPendingDeleteConfirm(false);
+    if (allCurrentSelected) {
+      const currentPageMd5s = new Set(selectableFiles.map((file) => file.md5));
+      setSelectedMd5s((current) => current.filter((md5) => !currentPageMd5s.has(md5)));
+      return;
+    }
+    setSelectedMd5s((current) => Array.from(new Set([...current, ...selectableFiles.map((file) => file.md5)])));
+  }
+
+  async function deleteSelectedFiles() {
+    if (selectedMd5s.length === 0 || mode !== "unreferenced") return;
+    if (!pendingDeleteConfirm) {
+      setPendingDeleteConfirm(true);
+      return;
+    }
+
+    setDeleting(true);
+    try {
+      await deleteUnreferencedFiles({ md5s: selectedMd5s });
+      setSelectedMd5s([]);
+      setPendingDeleteConfirm(false);
+      if (selectedMd5s.length >= files.length && currentPage > 1) setCurrentPage(currentPage - 1);
+      else await refreshReferences();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "删除无引用文件失败");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  function openElementPreview(element: MediaElement, elements: MediaElement[]) {
+    if (element.type === "image") {
+      onOpenImagePreview(elements, element);
+      return;
+    }
+    setPreviewElement(element);
+  }
+
+  function openFilePreview(file: MediaFileReferenceItemDto) {
+    const element = mediaFileToElement(file);
+    openElementPreview(element, [element]);
+  }
+
+  async function openReferencePreview(reference: MediaFileReferenceItemDto["references"][number]) {
+    if (reference.ownerType !== "media_content") return;
+    setPreviewingOwnerId(reference.ownerId);
+    try {
+      const content = await getMediaContent(reference.ownerId);
+      const singleElement = content.elements.length === 1 && content.type !== "composite" ? content.elements[0] : undefined;
+      if (singleElement) openElementPreview(singleElement, content.elements);
+      else setPreviewContent(content);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "加载引用内容失败");
+    } finally {
+      setPreviewingOwnerId("");
+    }
+  }
+
+  return (
+    <section className="space-y-4">
+      <Card className="p-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <form className="relative min-w-[260px] flex-1" onSubmit={submitSearch}>
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-subtle-foreground" />
+            <input
+              className="h-9 w-full rounded-md border border-border bg-surface pl-9 pr-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+              placeholder="查找 md5、路径、格式"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </form>
+          <SelectField label="范围" value={mode} options={fileReferenceModeOptions} onChange={changeMode} />
+          <Button variant="secondary" onClick={() => void refreshReferences()} disabled={loading}>
+            <RefreshCw className="h-4 w-4" />
+            {loading ? "刷新中" : "刷新"}
+          </Button>
+        </div>
+      </Card>
+      {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
+      <FileReferenceStatCards stats={stats} />
+      {mode === "unreferenced" && (
+        <Card className="flex flex-wrap items-center justify-between gap-3 p-4">
+          <div className="flex items-center gap-3 text-sm">
+            <input className="h-4 w-4 accent-[var(--primary)]" type="checkbox" checked={allCurrentSelected} disabled={selectableFiles.length === 0} aria-label="选择当前页无引用文件" onChange={toggleCurrentPage} />
+            <span className="font-medium">已选择 {selectedMd5s.length} 个无引用文件</span>
+            <span className="text-muted-foreground">删除会同时移除数据库文件记录和 objects 下的文件。</span>
+          </div>
+          <Button variant={pendingDeleteConfirm ? "danger" : "secondary"} disabled={selectedMd5s.length === 0 || deleting} onClick={() => void deleteSelectedFiles()}>
+            <Trash2 className="h-4 w-4" />
+            {deleting ? "删除中" : pendingDeleteConfirm ? "再次确认删除" : "删除已选"}
+          </Button>
+        </Card>
+      )}
+      <Pagination
+        ariaLabel="文件引用分页"
+        currentPage={currentPage}
+        totalPages={totalPages}
+        pageSize={pageSize}
+        pageSizeOptions={libraryPageSizeOptions}
+        totalItems={total}
+        itemLabel="个文件"
+        onPageChange={setCurrentPage}
+        onPageSizeChange={changePageSize}
+      />
+      <Card className="overflow-hidden">
+        <div className="hidden border-b border-border bg-surface-muted px-4 py-3 text-xs font-semibold text-muted-foreground xl:grid xl:grid-cols-[32px_minmax(300px,1fr)_90px_110px_150px_minmax(280px,1.2fr)]">
+          <span />
+          <span>文件</span>
+          <span>格式</span>
+          <span>大小</span>
+          <span>引用对象</span>
+          <span>引用来源</span>
+        </div>
+        {files.map((file) => (
+          <FileReferenceRow
+            key={file.md5}
+            file={file}
+            selectable={mode === "unreferenced" && file.ownerCount === 0 && file.referenceCount === 0}
+            selected={selectedMd5s.includes(file.md5)}
+            onToggle={toggleFile}
+            onOpenFile={openFilePreview}
+            onOpenReference={(reference) => void openReferencePreview(reference)}
+          />
+        ))}
+        {files.length === 0 && <div className="p-8 text-center text-sm text-muted-foreground">没有符合条件的文件。</div>}
+      </Card>
+      {previewingOwnerId && <div className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2 rounded-md border border-border bg-surface px-3 py-2 text-sm shadow-lg">正在加载引用内容 {previewingOwnerId}</div>}
+      {previewContent && <ContentDetailModal content={previewContent} onClose={() => setPreviewContent(null)} onOpenElement={(element) => openElementPreview(element, previewContent.elements)} />}
+      {previewElement && <MediaElementModal element={previewElement} onClose={() => setPreviewElement(null)} onOpenElement={(element) => openElementPreview(element, [element])} />}
+    </section>
+  );
+}
+
 function DataExportStatusBadge({ status }: { status: DataExportListItemDto["status"] }) {
   const label = status === "ready" ? "已完成" : status === "running" ? "处理中" : "失败";
   return (
@@ -4003,6 +4395,7 @@ export default function App() {
           {page === "audits" && <AuditsPage onOpenImagePreview={openImagePreview} />}
           {page === "events" && <EventsPage />}
           {page === "tags" && <TagManagementPage />}
+          {page === "references" && <FileReferencesPage onOpenImagePreview={openImagePreview} />}
           {page === "exports" && <DataExportsPage />}
         </main>
       </div>

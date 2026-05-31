@@ -30,6 +30,10 @@ const mockPrisma = vi.hoisted(() => ({
     deleteMany: vi.fn(),
     createMany: vi.fn(),
   },
+  mediaFileReference: {
+    deleteMany: vi.fn(),
+    createMany: vi.fn(),
+  },
   sourceBinding: {
     findFirst: vi.fn(),
     create: vi.fn(),
@@ -95,6 +99,13 @@ function contentRow(overrides: Record<string, unknown> = {}) {
     updatedAt: new Date("2026-01-01T00:00:00Z"),
     sources: [],
     ...overrides,
+  };
+}
+
+function mediaFileReferenceDelegate() {
+  return {
+    deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+    createMany: vi.fn().mockResolvedValue({ count: 0 }),
   };
 }
 
@@ -440,6 +451,7 @@ describe("pic routes", () => {
       auditEvent: {
         create: vi.fn().mockResolvedValue({ id: "audit-event-id" }),
       },
+      mediaFileReference: mediaFileReferenceDelegate(),
     };
     mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
     mockPrisma.mediaContent.findUnique.mockResolvedValue(contentRow({ id: "new-content", tags: ["弔图"], auditState: "pending", sources: [] }));
@@ -501,6 +513,7 @@ describe("pic routes", () => {
         findFirst: vi.fn().mockResolvedValue(undefined),
         create: vi.fn().mockResolvedValue({ id: "source-id" }),
       },
+      mediaFileReference: mediaFileReferenceDelegate(),
     };
     mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
     const app = await createPicOnlyApp();
@@ -564,6 +577,7 @@ describe("pic routes", () => {
       auditEvent: {
         create: vi.fn().mockResolvedValue({ id: "audit-event-id" }),
       },
+      mediaFileReference: mediaFileReferenceDelegate(),
     };
     mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
     mockPrisma.mediaContent.findUnique.mockResolvedValue(contentRow({ id: "qq-content", tags: ["表情"], auditState: "pending", sources: [] }));
@@ -662,6 +676,7 @@ describe("pic routes", () => {
       auditEvent: {
         create: vi.fn().mockResolvedValue({ id: "audit-event-id" }),
       },
+      mediaFileReference: mediaFileReferenceDelegate(),
     };
     mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
     mockPrisma.mediaContent.findUnique.mockResolvedValue({ ...updated, sources: [] });

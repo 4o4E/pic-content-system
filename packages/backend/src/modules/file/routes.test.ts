@@ -2,7 +2,13 @@ import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mockPrisma = vi.hoisted(() => ({
+  $queryRaw: vi.fn(),
   $transaction: vi.fn(),
+  mediaFile: {
+    deleteMany: vi.fn(),
+    findMany: vi.fn(),
+    findUnique: vi.fn(),
+  },
 }));
 
 const mockStoreMediaFile = vi.hoisted(() => vi.fn());
@@ -51,6 +57,122 @@ describe("file routes", () => {
   afterEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
+  });
+
+  it("引用管理接口返回文件统计和引用明细", async () => {
+    const file = mediaFile({ md5: "b".repeat(32), sizeBytes: BigInt(2048) });
+    mockPrisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          fileCount: 3,
+          referencedFileCount: 2,
+          unreferencedFileCount: 1,
+          multiReferencedFileCount: 1,
+          referenceCount: 4,
+        },
+      ])
+      .mockResolvedValueOnce([{ total: 1 }])
+      .mockResolvedValueOnce([{ md5: file.md5, referenceCount: 2, ownerCount: 2 }]);
+    mockPrisma.mediaFile.findMany.mockResolvedValue([
+      {
+        ...file,
+        references: [
+          {
+            fileMd5: file.md5,
+            ownerType: "media_content",
+            ownerId: "content-id",
+            refPath: "$[0]",
+            elementType: "image",
+            createdAt: new Date("2026-01-01T00:00:00Z"),
+          },
+          {
+            fileMd5: file.md5,
+            ownerType: "media_asset",
+            ownerId: "asset-id",
+            refPath: "element",
+            elementType: "image",
+            createdAt: new Date("2026-01-01T00:00:01Z"),
+          },
+        ],
+      },
+    ]);
+    const app = await createFileOnlyApp();
+
+    const response = await app.inject({ method: "GET", url: "/api/files/references?mode=multiple&page=1&size=100" });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      success: true,
+      data: {
+        stats: { fileCount: 3, referencedFileCount: 2, unreferencedFileCount: 1, multiReferencedFileCount: 1, referenceCount: 4 },
+        files: {
+          total: 1,
+          data: [
+            {
+              md5: file.md5,
+              sizeBytes: 2048,
+              referenceCount: 2,
+              ownerCount: 2,
+              references: [
+                { ownerType: "media_content", ownerId: "content-id", refPath: "$[0]", elementType: "image" },
+                { ownerType: "media_asset", ownerId: "asset-id", refPath: "element", elementType: "image" },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    expect(mockPrisma.mediaFile.findMany).toHaveBeenCalledWith({
+      where: { md5: { in: [file.md5] } },
+      include: { references: { orderBy: [{ ownerType: "asc" }, { ownerId: "asc" }, { refPath: "asc" }] } },
+    });
+  });
+
+  it("无引用文件删除接口会在服务端重新校验引用", async () => {
+    const file = mediaFile({ md5: "c".repeat(32), storageKey: "objects/cc/cc/missing.png" });
+    const tx = {
+      mediaFile: {
+        findMany: vi.fn().mockResolvedValue([{ ...file, references: [] }]),
+        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
+    const app = await createFileOnlyApp();
+
+    const response = await app.inject({
+      method: "DELETE",
+      url: "/api/files/unreferenced",
+      payload: { md5s: [file.md5, "bad-md5", file.md5.toUpperCase()] },
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ success: true, data: { deleted: 1 } });
+    expect(tx.mediaFile.findMany).toHaveBeenCalledWith({
+      where: { md5: { in: [file.md5] } },
+      include: { references: { select: { fileMd5: true } } },
+    });
+    expect(tx.mediaFile.deleteMany).toHaveBeenCalledWith({ where: { md5: { in: [file.md5] } } });
+  });
+
+  it("无引用文件删除接口遇到仍被引用的文件会拒绝整批删除", async () => {
+    const file = mediaFile({ md5: "d".repeat(32) });
+    const tx = {
+      mediaFile: {
+        findMany: vi.fn().mockResolvedValue([{ ...file, references: [{ fileMd5: file.md5 }] }]),
+        deleteMany: vi.fn(),
+      },
+    };
+    mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
+    const app = await createFileOnlyApp();
+
+    const response = await app.inject({ method: "DELETE", url: "/api/files/unreferenced", payload: { md5s: [file.md5] } });
+    await app.close();
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ success: false, message: "有 1 个文件仍存在引用，已取消删除" });
+    expect(tx.mediaFile.deleteMany).not.toHaveBeenCalled();
   });
 
   it("声明为图片的上传只接受常见图片格式", async () => {

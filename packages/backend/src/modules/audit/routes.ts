@@ -3,6 +3,7 @@ import type { ApiResp, AuditActionDto, AuditDetailDto, AuditListItemDto, AuditSt
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma.js";
 import { toMediaContentDto } from "../media/mapper.js";
+import { deleteMediaFileReferences } from "../file/file-reference-service.js";
 import { resolveSourceProfile } from "../source/source-service.js";
 import { toAuditEventDto, writeAuditEvent } from "./audit-service.js";
 
@@ -116,6 +117,7 @@ export async function registerAuditRoutes(app: FastifyInstance) {
         body: request.body,
       });
       await tx.contentTag.deleteMany({ where: { contentId: current.id } });
+      await deleteMediaFileReferences(tx, "media_content", [current.id]);
       await tx.mediaContent.delete({ where: { id: current.id } });
     });
     return { success: true, message: "ok", data: { deleted: 1 } };

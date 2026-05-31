@@ -20,6 +20,7 @@ async function cleanDatabase() {
   await prisma.contentLike.deleteMany();
   await prisma.contentTag.deleteMany();
   await prisma.mediaContent.deleteMany();
+  await prisma.mediaFileReference.deleteMany();
   await prisma.mediaFile.deleteMany();
   await prisma.tagAlias.deleteMany();
   await prisma.tag.deleteMany();

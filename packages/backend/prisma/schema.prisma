@@ -60,9 +60,26 @@ model MediaFile {
   metadata        Json     @default("{}")
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  assets MediaAsset[]
+  assets     MediaAsset[]
+  references MediaFileReference[]
 
   @@map("media_file")
+}
+
+model MediaFileReference {
+  fileMd5     String    @map("file_md5") @db.Char(32)
+  ownerType   String    @map("owner_type") @db.VarChar(32)
+  ownerId     String    @map("owner_id") @db.VarChar(64)
+  refPath     String    @map("ref_path") @db.VarChar(512)
+  elementType MediaType? @map("element_type")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  file MediaFile @relation(fields: [fileMd5], references: [md5], onDelete: Restrict)
+
+  @@id([fileMd5, ownerType, ownerId, refPath])
+  @@index([ownerType, ownerId])
+  @@index([fileMd5])
+  @@map("media_file_reference")
 }
 
 model MediaContent {

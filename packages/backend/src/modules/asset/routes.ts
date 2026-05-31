@@ -4,6 +4,7 @@ import type { MediaAssetStatus, MediaType, Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma.js";
 import { nextSnowflakeId } from "../../lib/snowflake.js";
 import { toMediaAssetDto } from "../media/mapper.js";
+import { assetFileReferences, deleteMediaFileReferences, replaceMediaFileReferences } from "../file/file-reference-service.js";
 
 function normalizeIds(ids: string[] | undefined) {
   return Array.from(new Set((ids ?? []).map((id) => id.trim()).filter(Boolean)));
@@ -44,15 +45,19 @@ export async function registerAssetRoutes(app: FastifyInstance) {
   });
 
   app.post<{ Body: CreateMediaAssetDto; Reply: ApiResp<MediaAssetDto> }>("/api/assets", async (request) => {
-    const asset = await prisma.mediaAsset.create({
-      data: {
-        id: nextSnowflakeId(),
-        kind: request.body.kind,
-        fileMd5: request.body.fileMd5,
-        element: request.body.element as unknown as Prisma.InputJsonValue,
-        sourceId: request.body.sourceId,
-        status: request.body.status ?? "pending",
-      },
+    const asset = await prisma.$transaction(async (tx) => {
+      const row = await tx.mediaAsset.create({
+        data: {
+          id: nextSnowflakeId(),
+          kind: request.body.kind,
+          fileMd5: request.body.fileMd5,
+          element: request.body.element as unknown as Prisma.InputJsonValue,
+          sourceId: request.body.sourceId,
+          status: request.body.status ?? "pending",
+        },
+      });
+      await replaceMediaFileReferences(tx, "media_asset", row.id, assetFileReferences(row));
+      return row;
     });
     return { success: true, message: "ok", data: toMediaAssetDto(asset) };
   });
@@ -61,7 +66,10 @@ export async function registerAssetRoutes(app: FastifyInstance) {
     const ids = normalizeIds(request.body?.ids);
     if (ids.length === 0) return { success: true, message: "ok", data: { deleted: 0 } };
 
-    const result = await prisma.mediaAsset.deleteMany({ where: { id: { in: ids } } });
+    const result = await prisma.$transaction(async (tx) => {
+      await deleteMediaFileReferences(tx, "media_asset", ids);
+      return tx.mediaAsset.deleteMany({ where: { id: { in: ids } } });
+    });
     return { success: true, message: "ok", data: { deleted: result.count } };
   });
 }

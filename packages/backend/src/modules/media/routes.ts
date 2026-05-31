@@ -23,6 +23,7 @@ import { toMediaContentDto } from "./mapper.js";
 import { resolveTagAliases, syncContentTags } from "../tag/tag-service.js";
 import { writeSourceBinding } from "../source/source-service.js";
 import { writeAuditEvent } from "../audit/audit-service.js";
+import { assetFileReferences, contentFileReferences, deleteMediaFileReferences, replaceMediaFileReferences } from "../file/file-reference-service.js";
 
 function parseTags(value: string | undefined) {
   return value?.split(",").map((tag) => tag.trim()).filter(Boolean) ?? [];
@@ -103,19 +104,16 @@ export async function registerMediaRoutes(app: FastifyInstance) {
     const md5 = request.params.md5.trim().toLowerCase();
     if (!/^[0-9a-f]{32}$/.test(md5)) return reply.code(400).send({ success: false, message: "文件 MD5 格式错误" });
 
-    const ids = await prisma.$queryRaw<Array<{ id: string }>>`
-      SELECT id
-      FROM media_content
-      WHERE EXISTS (
-        SELECT 1
-        FROM jsonb_array_elements(elements) AS element
-        WHERE element ->> 'id' = ${md5}
-      )
-    `;
+    const references = await prisma.mediaFileReference.findMany({
+      where: { fileMd5: md5, ownerType: "media_content" },
+      select: { ownerId: true },
+      distinct: ["ownerId"],
+    });
+    const ids = references.map((reference) => reference.ownerId);
     if (ids.length === 0) return { success: true, message: "ok", data: [] };
 
     const rows = await prisma.mediaContent.findMany({
-      where: { id: { in: ids.map((row) => row.id) } },
+      where: { id: { in: ids } },
       include: { sources: true },
       orderBy: { createdAt: "desc" },
     });
@@ -159,6 +157,7 @@ export async function registerMediaRoutes(app: FastifyInstance) {
 
       await syncContentTags(tx, row.id, tags);
       await writeSourceBinding(tx, row.id, elements, request.body.source);
+      await replaceMediaFileReferences(tx, "media_content", row.id, contentFileReferences(elements));
       await writeAuditEvent(tx, {
         contentId: row.id,
         action: "submit",
@@ -306,6 +305,8 @@ export async function registerMediaRoutes(app: FastifyInstance) {
       await tx.contentTag.deleteMany({ where: { contentId: { in: ids } } });
       const rowTags = Array.from(new Set([...(row.tags ?? []), ...tags]));
       await syncContentTags(tx, row.id, rowTags);
+      await replaceMediaFileReferences(tx, "media_content", row.id, contentFileReferences(elements));
+      await deleteMediaFileReferences(tx, "media_content", ids.filter((id) => id !== row.id));
       await tx.mediaContent.deleteMany({ where: { id: { in: ids.filter((id) => id !== row.id) } } });
       return row;
     });
@@ -325,6 +326,7 @@ export async function registerMediaRoutes(app: FastifyInstance) {
     const deleted = await prisma.$transaction(async (tx) => {
       // 内容 tag 索引没有 Prisma 级联关系，删除内容前先清理索引。
       await tx.contentTag.deleteMany({ where: { contentId: { in: ids } } });
+      await deleteMediaFileReferences(tx, "media_content", ids);
       const result = await tx.mediaContent.deleteMany({ where: { id: { in: ids } } });
       return result.count;
     });
@@ -359,7 +361,7 @@ export async function registerMediaRoutes(app: FastifyInstance) {
         const elements = Array.isArray(content.elements) ? (content.elements as unknown as MediaElement[]) : [];
         const sourceId = content.sources[0]?.id;
         for (const element of elements) {
-          await tx.mediaAsset.create({
+          const asset = await tx.mediaAsset.create({
             data: {
               id: nextSnowflakeId(),
               kind: element.type,
@@ -373,11 +375,13 @@ export async function registerMediaRoutes(app: FastifyInstance) {
               } as Prisma.InputJsonObject,
             },
           });
+          await replaceMediaFileReferences(tx, "media_asset", asset.id, assetFileReferences(asset));
           created++;
         }
       }
 
       await tx.contentTag.deleteMany({ where: { contentId: { in: contentIds } } });
+      await deleteMediaFileReferences(tx, "media_content", contentIds);
       const moved = await tx.mediaContent.deleteMany({ where: { id: { in: contentIds } } });
 
       return { created, moved: moved.count };

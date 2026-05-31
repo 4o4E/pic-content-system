@@ -1,5 +1,6 @@
 import type { MediaElement, MediaType } from "./element";
 import type { SourceBindingDto, SourceProfileDto } from "../platform/source";
+import type { PageResp } from "../api/page";
 
 export type AuditState = "pending" | "approved" | "rejected" | "archived";
 
@@ -151,6 +152,45 @@ export interface MediaFileDto {
   height?: number;
   durationSeconds?: number;
   createdAt: string;
+}
+
+export type MediaFileReferenceOwnerType = "media_content" | "media_asset" | "workspace_draft";
+
+export type MediaFileReferenceMode = "all" | "multiple" | "unreferenced";
+
+export interface MediaFileReferenceDto {
+  ownerType: MediaFileReferenceOwnerType;
+  ownerId: string;
+  refPath: string;
+  elementType?: MediaType;
+  createdAt: string;
+}
+
+export interface MediaFileReferenceItemDto extends MediaFileDto {
+  referenceCount: number;
+  ownerCount: number;
+  references: MediaFileReferenceDto[];
+}
+
+export interface MediaFileReferenceStatsDto {
+  fileCount: number;
+  referencedFileCount: number;
+  unreferencedFileCount: number;
+  multiReferencedFileCount: number;
+  referenceCount: number;
+}
+
+export interface MediaFileReferenceListDto {
+  stats: MediaFileReferenceStatsDto;
+  files: PageResp<MediaFileReferenceItemDto>;
+}
+
+export interface BatchDeleteMediaFilesDto {
+  md5s: string[];
+}
+
+export interface BatchDeleteMediaFilesResultDto {
+  deleted: number;
 }
 
 export interface CreateMediaFileDto {

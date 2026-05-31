@@ -5,6 +5,8 @@ import type {
   AuditListItemDto,
   AuditState,
   BatchDeleteMediaAssetsDto,
+  BatchDeleteMediaFilesDto,
+  BatchDeleteMediaFilesResultDto,
   BatchDeleteMediaContentsDto,
   BatchMergeMediaContentsDto,
   AuthSessionDto,
@@ -26,6 +28,8 @@ import type {
   MediaAssetStatus,
   MediaContentDto,
   MediaFileDto,
+  MediaFileReferenceListDto,
+  MediaFileReferenceMode,
   MediaType,
   PageResp,
   PicContentItemDto,
@@ -80,6 +84,13 @@ export interface PicContentQuery {
 export interface AuditQuery {
   state?: AuditState | "all";
   type?: MediaType | "all";
+  page?: number;
+  size?: number;
+}
+
+export interface FileReferenceQuery {
+  mode?: MediaFileReferenceMode;
+  q?: string;
   page?: number;
   size?: number;
 }
@@ -223,6 +234,10 @@ export function createMedia(body: CreateMediaContentDto) {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export function getMediaContent(id: string) {
+  return request<MediaContentDto>(`/api/media/${encodeURIComponent(id)}`);
 }
 
 export function batchUpdateMediaTags(body: BatchUpdateMediaTagsDto) {
@@ -417,6 +432,24 @@ export async function downloadDataExport(id: string) {
 
 export function fileUrl(md5: string) {
   return withQuery(`/api/files/${md5}`, { token: getStoredToken() });
+}
+
+export function listFileReferences(query: FileReferenceQuery = {}) {
+  return request<MediaFileReferenceListDto>(
+    withQuery("/api/files/references", {
+      mode: query.mode,
+      q: query.q,
+      page: query.page ?? 1,
+      size: query.size ?? 100,
+    }),
+  );
+}
+
+export function deleteUnreferencedFiles(body: BatchDeleteMediaFilesDto) {
+  return request<BatchDeleteMediaFilesResultDto>("/api/files/unreferenced", {
+    method: "DELETE",
+    body: JSON.stringify(body),
+  });
 }
 
 export function createFile(body: CreateMediaFileDto) {

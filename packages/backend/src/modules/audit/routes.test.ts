@@ -16,6 +16,9 @@ const mockPrisma = vi.hoisted(() => ({
   contentTag: {
     deleteMany: vi.fn(),
   },
+  mediaFileReference: {
+    deleteMany: vi.fn(),
+  },
   $transaction: vi.fn(),
 }));
 
@@ -262,6 +265,7 @@ describe("audit routes", () => {
     const tx = {
       auditEvent: { create: vi.fn().mockResolvedValue({ id: "event-id" }) },
       contentTag: { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      mediaFileReference: { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) },
       mediaContent: { delete: vi.fn().mockResolvedValue(contentRow()) },
     };
     mockPrisma.$transaction.mockImplementation((callback) => callback(tx));
@@ -280,6 +284,7 @@ describe("audit routes", () => {
       data: expect.objectContaining({ contentId: "content-id", action: "delete", fromState: "rejected", reason: "删除" }),
     });
     expect(tx.contentTag.deleteMany).toHaveBeenCalledWith({ where: { contentId: "content-id" } });
+    expect(tx.mediaFileReference.deleteMany).toHaveBeenCalledWith({ where: { ownerType: "media_content", ownerId: { in: ["content-id"] } } });
     expect(tx.mediaContent.delete).toHaveBeenCalledWith({ where: { id: "content-id" } });
   });
 });

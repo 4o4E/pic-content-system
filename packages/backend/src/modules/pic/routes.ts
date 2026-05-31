@@ -18,6 +18,7 @@ import { prisma } from "../../db/prisma.js";
 import { nextSnowflakeId } from "../../lib/snowflake.js";
 import { commonImageFormatText, inspectFileBuffer, isCommonImageInspection } from "../file/file-inspector.js";
 import { storeMediaFile } from "../file/file-storage.js";
+import { assetFileReferences, contentFileReferences, replaceMediaFileReferences } from "../file/file-reference-service.js";
 import { contentSign } from "../media/media-utils.js";
 import { toMediaAssetDto, toMediaContentDto, toMediaFileDto } from "../media/mapper.js";
 import { resolveTagAliases, syncContentTags } from "../tag/tag-service.js";
@@ -244,6 +245,7 @@ export async function registerPicRoutes(app: FastifyInstance, config: AppConfig)
             status: "pending",
           },
         });
+        await replaceMediaFileReferences(tx, "media_asset", asset.id, assetFileReferences(asset));
         return { file, asset, existed: false };
       }
 
@@ -275,6 +277,7 @@ export async function registerPicRoutes(app: FastifyInstance, config: AppConfig)
         fileId: source.fileId ?? file.md5,
         sourceKey: source.sourceKey ?? file.md5,
       });
+      await replaceMediaFileReferences(tx, "media_content", content.id, contentFileReferences(elements));
       await writeAuditEvent(tx, {
         contentId: content.id,
         action: "submit",

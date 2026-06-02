@@ -280,6 +280,26 @@ function collectContentImagePreviewGroups(contents: MediaContentDto[]): ImagePre
     .filter((group) => group.images.length > 0);
 }
 
+function collectFileImagePreviewGroups(files: MediaFileReferenceItemDto[]): ImagePreviewGroup[] {
+  return files
+    .map((file) => {
+      const src = fileUrl(file.md5);
+      return {
+        label: `文件 ${file.md5.slice(0, 8)}`,
+        images: mediaFilePreviewType(file) === "image" ? [{ src, alt: "文件预览", downloadUrl: src }] : [],
+      };
+    })
+    .filter((group) => group.images.length > 0);
+}
+
+function findImagePreviewGroupIndex(groups: ImagePreviewGroup[], activeElement: MediaElement) {
+  const activeSrc = imagePreviewSrc(activeElement);
+  return Math.max(
+    0,
+    groups.findIndex((group) => group.images.some((image) => image.src === activeSrc)),
+  );
+}
+
 function collectImageElements(elements: MediaElement[]): Array<Extract<MediaElement, { type: "image" }>> {
   return elements.flatMap((element) => {
     if (element.type === "image") return [element];
@@ -2014,11 +2034,7 @@ function ContentLibraryPage({
   function openElementPreview(element: MediaElement, elements: MediaElement[]) {
     if (element.type === "image") {
       const groups = collectContentImagePreviewGroups(contents);
-      const activeSrc = imagePreviewSrc(element);
-      const groupIndex = Math.max(
-        0,
-        groups.findIndex((group) => group.images.some((image) => image.src === activeSrc)),
-      );
+      const groupIndex = findImagePreviewGroupIndex(groups, element);
       onOpenImagePreview(elements, element, groups, groupIndex);
       return;
     }
@@ -2410,11 +2426,7 @@ function PicApiPreviewPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePr
   function openElementPreview(element: MediaElement, elements: MediaElement[]) {
     if (element.type === "image") {
       const groups = collectContentImagePreviewGroups(items);
-      const activeSrc = imagePreviewSrc(element);
-      const groupIndex = Math.max(
-        0,
-        groups.findIndex((group) => group.images.some((image) => image.src === activeSrc)),
-      );
+      const groupIndex = findImagePreviewGroupIndex(groups, element);
       onOpenImagePreview(elements, element, groups, groupIndex);
       return;
     }
@@ -2631,11 +2643,7 @@ function AuditsPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePreviewOp
   function openElementPreview(element: MediaElement, elements: MediaElement[]) {
     if (element.type === "image") {
       const groups = collectContentImagePreviewGroups(items);
-      const activeSrc = imagePreviewSrc(element);
-      const groupIndex = Math.max(
-        0,
-        groups.findIndex((group) => group.images.some((image) => image.src === activeSrc)),
-      );
+      const groupIndex = findImagePreviewGroupIndex(groups, element);
       onOpenImagePreview(elements, element, groups, groupIndex);
       return;
     }
@@ -3486,9 +3494,9 @@ function FileReferencesPage({ onOpenImagePreview }: { onOpenImagePreview: ImageP
     }
   }
 
-  function openElementPreview(element: MediaElement, elements: MediaElement[]) {
+  function openElementPreview(element: MediaElement, elements: MediaElement[], groups: ImagePreviewGroup[] = [], groupIndex = 0) {
     if (element.type === "image") {
-      onOpenImagePreview(elements, element);
+      onOpenImagePreview(elements, element, groups, groupIndex);
       return;
     }
     setPreviewElement(element);
@@ -3496,7 +3504,8 @@ function FileReferencesPage({ onOpenImagePreview }: { onOpenImagePreview: ImageP
 
   function openFilePreview(file: MediaFileReferenceItemDto) {
     const element = mediaFileToElement(file);
-    openElementPreview(element, [element]);
+    const groups = collectFileImagePreviewGroups(files);
+    openElementPreview(element, [element], groups, findImagePreviewGroupIndex(groups, element));
   }
 
   async function openReferencePreview(reference: MediaFileReferenceItemDto["references"][number]) {
@@ -3505,7 +3514,7 @@ function FileReferencesPage({ onOpenImagePreview }: { onOpenImagePreview: ImageP
     try {
       const content = await getMediaContent(reference.ownerId);
       const singleElement = content.elements.length === 1 && content.type !== "composite" ? content.elements[0] : undefined;
-      if (singleElement) openElementPreview(singleElement, content.elements);
+      if (singleElement) openElementPreview(singleElement, content.elements, collectContentImagePreviewGroups([content]), 0);
       else setPreviewContent(content);
       setError("");
     } catch (cause) {

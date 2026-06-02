@@ -92,3 +92,7 @@ select {
   background: var(--muted-foreground);
   background-clip: content-box;
 }
+
+.react-viewer-image-transition {
+  transition-duration: 80ms !important;
+}

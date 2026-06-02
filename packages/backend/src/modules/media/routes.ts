@@ -29,6 +29,10 @@ function parseTags(value: string | undefined) {
   return value?.split(",").map((tag) => tag.trim()).filter(Boolean) ?? [];
 }
 
+function earliestDate(dates: Date[]) {
+  return dates.reduce((earliest, date) => (date.getTime() < earliest.getTime() ? date : earliest));
+}
+
 export async function registerMediaRoutes(app: FastifyInstance) {
   app.get<{
     Querystring: {
@@ -258,9 +262,11 @@ export async function registerMediaRoutes(app: FastifyInstance) {
       const contentById = new Map(contents.map((content) => [content.id, content]));
       const orderedContents = ids.map((id) => contentById.get(id));
       if (orderedContents.some((content) => !content)) return undefined;
+      const selectedContents = orderedContents.filter((content): content is (typeof contents)[number] => Boolean(content));
+      const mergedCreatedAt = earliestDate(selectedContents.map((content) => content.createdAt));
 
-      const rawElements = orderedContents.flatMap((content) => {
-        const value = content?.elements;
+      const rawElements = selectedContents.flatMap((content) => {
+        const value = content.elements;
         return Array.isArray(value) ? (value as unknown as MediaElement[]) : [];
       });
       const normalized = flattenChatRecordElements(rawElements);
@@ -269,7 +275,7 @@ export async function registerMediaRoutes(app: FastifyInstance) {
       const elements = normalized.elements;
       if (elements.length === 0) return null;
 
-      const tags = Array.from(new Set(orderedContents.flatMap((content) => content?.tags ?? [])));
+      const tags = Array.from(new Set(selectedContents.flatMap((content) => content.tags)));
       const sign = contentSign(elements);
       const existing = await tx.mediaContent.findUnique({ where: { sign } });
       const mergedTitle = ids.length === 1 && normalized.hasChatRecord ? "聊天记录转复合内容" : `合并内容（${ids.length} 条）`;
@@ -282,6 +288,7 @@ export async function registerMediaRoutes(app: FastifyInstance) {
               elements: elements as unknown as Prisma.InputJsonValue,
               type: inferContentType(elements),
               auditState: "approved",
+              createdAt: earliestDate([existing.createdAt, mergedCreatedAt]),
             },
           })
         : await tx.mediaContent.create({
@@ -293,6 +300,7 @@ export async function registerMediaRoutes(app: FastifyInstance) {
               elements: elements as unknown as Prisma.InputJsonValue,
               sign,
               auditState: "approved",
+              createdAt: mergedCreatedAt,
             },
           });
 

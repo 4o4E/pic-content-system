@@ -13,8 +13,9 @@
 - 后端不设计用户系统，只使用环境变量 `ACCESS_TOKEN` 做访问 token 校验。
 - 前端登录页输入 token，后续请求通过 `Authorization: Bearer <token>` 调后端接口。
 - 前端开发环境默认走 Vite `/api` 代理到后端，生产环境由后端托管前端 dist；需要覆盖外部 API 时配置 `VITE_API_BASE_URL`。
-- PostgreSQL 默认本地连接见 `.env`，当前开发环境为 `postgresql://root:123456@localhost:5432/pic_content_system?schema=public`。
+- PostgreSQL 连接由 `DATABASE_URL` 指定，数据库账号、密码和库名直接写在连接串里。
 - 二进制文件存文件系统，文件 ID 使用 MD5，内容签名也使用 MD5。
+- 定时备份通过 `BACKUP_DIR` 和 `BACKUP_CRON` 启用，复用完整导出包格式。
 - 已有旧数据导入脚本：`pnpm --filter @pic/backend import:old-pic`，来源目录按脚本内配置读取。
 - NapCat 群媒体导入脚本：`pnpm --filter @pic/backend import:napcat-export -- <导出目录>` 默认 dry-run；正式写入需要加 `--commit`，默认给内容加 `弔图` tag，可用 `--tag=xxx` 追加 tag。
 
@@ -78,17 +79,36 @@ pnpm release:dist
 - `packages/backend/dist`：后端编译产物。
 - `packages/backend/public`：前端编译产物。
 - `packages/backend/prisma`：Prisma schema 和生产迁移。
-- `Dockerfile`、`compose.yaml`、`.env.production.example`：基于 dist 产物的生产镜像和 Compose 部署文件。
+- `Dockerfile`、`compose.yaml`、`.env.example`：基于 dist 产物的生产镜像和 Compose 部署文件。
 
 Docker Compose 部署：
 
 ```powershell
-Copy-Item .env.production.example .env.production
-# 修改 .env.production 中的 ACCESS_TOKEN、POSTGRES_PASSWORD 等密钥
-docker compose --env-file .env.production up -d --build
+Copy-Item .env.example .env
+# 修改 .env 中的 ACCESS_TOKEN、DATABASE_URL 等配置
+docker compose --env-file .env up -d --build
 ```
 
 默认访问地址为 `http://localhost:3000`。首次启动时容器会执行 `prisma migrate deploy`，通过 `RUN_MIGRATIONS=false` 可以关闭自动迁移。媒体文件存储在 Compose volume `media_files`，数据库存储在 `postgres_data`。
+
+### 定时备份
+
+后端可以按 cron 表达式自动创建完整导出包，并复制到 `BACKUP_DIR` 指定目录。未配置 `BACKUP_DIR` 时不启用；配置 `BACKUP_DIR` 时必须同时配置 `BACKUP_CRON`。cron 支持 5 段或带秒的 6 段表达式，例如每天 03:00：
+
+```env
+BACKUP_DIR=/data/backups
+BACKUP_CRON=0 3 * * *
+```
+
+备份文件名格式为 `pic-content-backup-YYYYMMDD-HHmmss-<导出ID>.zip`。备份任务不会自动删除历史文件，需要保留策略时在备份目录侧单独配置清理任务。
+
+Docker Compose 默认把容器内 `/data/backups` 挂到 `backup_files` volume。需要复制到宿主机指定目录时，在 `.env` 中设置：
+
+```env
+BACKUP_DIR=/data/backups
+BACKUP_CRON=0 3 * * *
+HOST_BACKUP_DIR=F:/data/pic-content-system/backups
+```
 
 ### 已有 PostgreSQL + 绝对路径部署
 
@@ -105,11 +125,15 @@ services:
       DATABASE_URL: ${DATABASE_URL:?必须配置已有 PostgreSQL 的 DATABASE_URL}
       ACCESS_TOKEN: ${ACCESS_TOKEN:?必须配置 ACCESS_TOKEN}
       FILES_DIR: /data/files
+      BACKUP_DIR: ${BACKUP_DIR:-}
+      BACKUP_CRON: ${BACKUP_CRON:-}
       PORT: 3000
       RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
     volumes:
       # 左侧必须替换为宿主机真实存在的绝对路径；右侧保持和 FILES_DIR 一致
       - ${HOST_FILES_DIR:?必须配置宿主机媒体文件绝对路径}:/data/files
+      # 启用定时备份时把 BACKUP_DIR 指向右侧目录，左侧可改为宿主机备份目录
+      - ${HOST_BACKUP_DIR:-./data/backups}:/data/backups
     ports:
       - "${APP_PORT:-3000}:3000"
     healthcheck:
@@ -127,26 +151,29 @@ APP_PORT=3000
 ACCESS_TOKEN=change-this-access-token
 DATABASE_URL=postgresql://pic:change-this-password@postgres.example.com:5432/pic_content_system?schema=public
 HOST_FILES_DIR=F:/data/pic-content-system/files
+BACKUP_DIR=/data/backups
+BACKUP_CRON=0 3 * * *
+HOST_BACKUP_DIR=F:/data/pic-content-system/backups
 RUN_MIGRATIONS=true
 ```
 
 如果 PostgreSQL 在 Docker Desktop 宿主机上，容器内不能用 `localhost` 访问宿主机 PostgreSQL，通常把 `DATABASE_URL` 的主机名写成 `host.docker.internal`；如果 PostgreSQL 在同一个 Docker 网络内，主机名写对应服务名或容器名；如果 PostgreSQL 是远程数据库，主机名写数据库域名或 IP。
 
-首次启动前需要确保数据库已存在、账号有建表和迁移权限，并提前创建 `HOST_FILES_DIR` 对应目录。启动命令：
+首次启动前需要确保数据库已存在、账号有建表和迁移权限，并提前创建 `HOST_FILES_DIR` 对应目录；启用定时备份时也需要提前创建 `HOST_BACKUP_DIR` 对应目录。启动命令：
 
 ```powershell
-docker compose --env-file .env.production -f compose.external-pg.yaml up -d
+docker compose --env-file .env -f compose.external-pg.yaml up -d
 ```
 
 使用本地构建镜像时保留 `build.context` 并执行：
 
 ```powershell
-docker compose --env-file .env.production -f compose.external-pg.yaml up -d --build
+docker compose --env-file .env -f compose.external-pg.yaml up -d --build
 ```
 
-迁移默认由容器启动时执行 `prisma migrate deploy`；如果数据库迁移由其他流程统一执行，把 `RUN_MIGRATIONS=false` 写入 `.env.production`。
+迁移默认由容器启动时执行 `prisma migrate deploy`；如果数据库迁移由其他流程统一执行，把 `RUN_MIGRATIONS=false` 写入 `.env`。
 
-使用 GitHub Release 镜像部署时，把 `.env.production` 中的 `APP_IMAGE` 改为：
+使用 GitHub Release 镜像部署时，把 `.env` 中的 `APP_IMAGE` 改为：
 
 ```env
 APP_IMAGE=ghcr.io/<owner>/<repo>:vX.Y.Z
@@ -155,8 +182,8 @@ APP_IMAGE=ghcr.io/<owner>/<repo>:vX.Y.Z
 然后执行：
 
 ```powershell
-docker compose --env-file .env.production pull app
-docker compose --env-file .env.production up -d
+docker compose --env-file .env pull app
+docker compose --env-file .env up -d
 ```
 
 ## GitHub CI / Release

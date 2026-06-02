@@ -3,9 +3,9 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-pic_content_system}
-      POSTGRES_USER: ${POSTGRES_USER:-pic}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pic_content_password}
+      POSTGRES_DB: pic_content_system
+      POSTGRES_USER: pic
+      POSTGRES_PASSWORD: pic_content_password
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -23,13 +23,16 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-pic}:${POSTGRES_PASSWORD:-pic_content_password}@db:5432/${POSTGRES_DB:-pic_content_system}?schema=public
+      DATABASE_URL: ${DATABASE_URL:-postgresql://pic:pic_content_password@db:5432/pic_content_system?schema=public}
       ACCESS_TOKEN: ${ACCESS_TOKEN:?必须配置 ACCESS_TOKEN}
       FILES_DIR: /data/files
+      BACKUP_DIR: ${BACKUP_DIR:-}
+      BACKUP_CRON: ${BACKUP_CRON:-}
       PORT: 3000
       RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
     volumes:
       - media_files:/data/files
+      - ${HOST_BACKUP_DIR:-backup_files}:/data/backups
     ports:
       - "${APP_PORT:-3000}:3000"
     healthcheck:
@@ -41,3 +44,4 @@ services:
 volumes:
   postgres_data:
   media_files:
+  backup_files:

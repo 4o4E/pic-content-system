@@ -33,7 +33,7 @@ for (const file of [
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
   "README.md",
-  ".env.production.example",
+  ".env.example",
   "compose.yaml",
 ]) {
   await copyFile(path.join(root, file), path.join(releaseRoot, file));

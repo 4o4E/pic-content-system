@@ -8,6 +8,7 @@ import { loadConfig, type AppConfig } from "./config/env.js";
 import { registerAssetRoutes } from "./modules/asset/routes.js";
 import { registerAuditRoutes } from "./modules/audit/routes.js";
 import { registerAuthGuard, registerAuthRoutes } from "./modules/auth/routes.js";
+import { registerScheduledBackup } from "./modules/backup/scheduler.js";
 import { registerDataExportRoutes } from "./modules/export/routes.js";
 import { registerFileRoutes } from "./modules/file/routes.js";
 import { registerHealthRoutes } from "./modules/health/routes.js";
@@ -70,6 +71,7 @@ export async function createApp(config: AppConfig = loadConfig()) {
   await registerDataExportRoutes(app, config);
   await registerFileRoutes(app, config);
   await registerFrontendRoutes(app, config);
+  registerScheduledBackup(app, config);
 
   return app;
 }

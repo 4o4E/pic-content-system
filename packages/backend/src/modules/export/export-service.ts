@@ -576,7 +576,7 @@ export async function getDataExport(config: AppConfig, id: string): Promise<Data
   return sidecar ? withPackageManifest(config, await recoverStaleSidecar(config, sidecar)) : undefined;
 }
 
-export async function createDataExport(config: AppConfig, input: CreateDataExportDto): Promise<DataExportDetailDto> {
+async function createDataExportSidecar(config: AppConfig, input: CreateDataExportDto): Promise<ExportSidecar> {
   await ensureExportsRoot(config);
   const id = nextSnowflakeId();
   const createdAt = nowIso();
@@ -597,12 +597,25 @@ export async function createDataExport(config: AppConfig, input: CreateDataExpor
     updatedAt: createdAt,
   };
   await writeJsonFile(sidecarPath(config, id), sidecar);
-  activeExportJobs.add(id);
+  return sidecar;
+}
+
+export async function createDataExport(config: AppConfig, input: CreateDataExportDto): Promise<DataExportDetailDto> {
+  const sidecar = await createDataExportSidecar(config, input);
+  activeExportJobs.add(sidecar.id);
   void runDataExportJob(config, sidecar);
   return withRuntimeStats(config, sidecar);
 }
 
-async function runDataExportJob(config: AppConfig, sidecar: ExportSidecar) {
+export async function createDataExportAndWait(config: AppConfig, input: CreateDataExportDto): Promise<DataExportDetailDto> {
+  const sidecar = await createDataExportSidecar(config, input);
+  activeExportJobs.add(sidecar.id);
+  const result = await runDataExportJob(config, sidecar);
+  if (result.status === "failed") throw new Error(result.error ?? "导出失败");
+  return withPackageManifest(config, result);
+}
+
+async function runDataExportJob(config: AppConfig, sidecar: ExportSidecar): Promise<ExportSidecar> {
   const zip = dataExportZipPath(config, sidecar.id);
   const tempZip = `${zip}.tmp`;
   try {
@@ -640,6 +653,7 @@ async function runDataExportJob(config: AppConfig, sidecar: ExportSidecar) {
       finishedAt,
     };
     await writeJsonFile(sidecarPath(config, sidecar.id), ready);
+    return ready;
   } catch (cause) {
     await fs.promises.rm(tempZip, { force: true }).catch(() => undefined);
     const failedAt = nowIso();
@@ -651,6 +665,7 @@ async function runDataExportJob(config: AppConfig, sidecar: ExportSidecar) {
       error: cause instanceof Error ? cause.message : "导出失败",
     };
     await writeJsonFile(sidecarPath(config, sidecar.id), failed);
+    return failed;
   } finally {
     activeExportJobs.delete(sidecar.id);
   }

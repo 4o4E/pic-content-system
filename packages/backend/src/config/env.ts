@@ -7,6 +7,12 @@ export interface AppConfig {
   accessToken: string;
   frontendDistDir: string;
   maxRequestBodyBytes: number;
+  scheduledBackup?: ScheduledBackupConfig;
+}
+
+export interface ScheduledBackupConfig {
+  directory: string;
+  cron: string;
 }
 
 let dotEnvLoaded = false;
@@ -36,6 +42,19 @@ export function ensureDotEnvLoaded() {
   }
 }
 
+function optionalEnvValue(value: string | undefined) {
+  const normalized = value?.trim();
+  return normalized ? normalized : undefined;
+}
+
+export function loadScheduledBackupConfig(env: NodeJS.ProcessEnv = process.env): ScheduledBackupConfig | undefined {
+  const directory = optionalEnvValue(env.BACKUP_DIR);
+  if (!directory) return undefined;
+  const cron = optionalEnvValue(env.BACKUP_CRON);
+  if (!cron) throw new Error("配置 BACKUP_DIR 时必须同时配置 BACKUP_CRON");
+  return { directory, cron };
+}
+
 export function loadConfig(): AppConfig {
   ensureDotEnvLoaded();
   return {
@@ -44,5 +63,6 @@ export function loadConfig(): AppConfig {
     accessToken: process.env.ACCESS_TOKEN ?? "",
     frontendDistDir: process.env.FRONTEND_DIST_DIR ?? "packages/backend/public",
     maxRequestBodyBytes: Number(process.env.MAX_REQUEST_BODY_BYTES ?? 100 * 1024 * 1024),
+    scheduledBackup: loadScheduledBackupConfig(),
   };
 }

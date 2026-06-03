@@ -40,6 +40,18 @@ export function createImagePreviewState(images: ImagePreviewItem[], activeIndex 
   };
 }
 
+function previewClickZone(clientX: number) {
+  const unit = window.innerWidth / 3;
+  if (clientX < unit) return "left";
+  if (clientX > unit * 2) return "right";
+  return undefined;
+}
+
+function isPreviewControlTarget(target: EventTarget | null) {
+  if (!(target instanceof Element)) return false;
+  return Boolean(target.closest(".react-viewer-close, .react-viewer-footer, [data-image-preview-controls], button, a"));
+}
+
 export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewState; onClose: () => void }) {
   const [activeIndex, setActiveIndex] = useState(state.activeIndex);
   const [groupIndex, setGroupIndex] = useState(state.groupIndex ?? 0);
@@ -66,15 +78,37 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
   }, [groups, state.activeIndex, state.groupIndex, state.images, state.visible]);
 
   const changeGroup = useCallback(
-    (offset: number) => {
+    (offset: number, target: "first" | "last" = "first") => {
       if (groups.length === 0) return;
       const next = Math.min(Math.max(groupIndex + offset, 0), groups.length - 1);
       if (next === groupIndex) return;
-      setGroupSwitchGuardIndex(activeIndex);
+      const nextImages = groups[next]?.images ?? [];
+      const nextActiveIndex = target === "last" ? Math.max(nextImages.length - 1, 0) : 0;
+      setGroupSwitchGuardIndex(Math.max(activeIndex, nextActiveIndex));
       setGroupIndex(next);
-      setActiveIndex(0);
+      setActiveIndex(nextActiveIndex);
     },
     [activeIndex, groupIndex, groups],
+  );
+
+  const navigateImage = useCallback(
+    (offset: number) => {
+      if (offset > 0) {
+        if (safeActiveIndex < activeImages.length - 1) {
+          setActiveIndex(safeActiveIndex + 1);
+          return;
+        }
+        changeGroup(1, "first");
+        return;
+      }
+
+      if (safeActiveIndex > 0) {
+        setActiveIndex(safeActiveIndex - 1);
+        return;
+      }
+      changeGroup(-1, "last");
+    },
+    [activeImages.length, changeGroup, safeActiveIndex],
   );
 
   useEffect(() => {
@@ -103,8 +137,15 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
 
   if (!state.visible || !activeImage) return null;
 
+  function stopPreviewZoneDrag(event: MouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
   function handleMaskClick(event: MouseEvent<HTMLDivElement>) {
     if (!(event.target instanceof Element)) return;
+    if (isPreviewControlTarget(event.target)) return;
+    if (previewClickZone(event.clientX)) return;
     if (event.target.closest("img")) return;
     onClose();
   }
@@ -112,7 +153,7 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
   const groupControls =
     canChangeGroup && typeof document !== "undefined"
       ? createPortal(
-          <div className="fixed left-1/2 top-4 z-[1215] flex max-w-[calc(100vw-5rem)] -translate-x-1/2 items-center gap-2 rounded-md bg-black/70 p-2 text-white shadow-lg">
+          <div data-image-preview-controls className="fixed left-1/2 top-4 z-[1215] flex max-w-[calc(100vw-5rem)] -translate-x-1/2 items-center gap-2 rounded-md bg-black/70 p-2 text-white shadow-lg">
             <button
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md hover:bg-white/10 disabled:opacity-40"
               type="button"
@@ -142,6 +183,36 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
         )
       : null;
 
+  const clickZones =
+    typeof document !== "undefined"
+      ? createPortal(
+          <div data-image-preview-zones className="pointer-events-none fixed bottom-24 left-0 right-0 top-12 z-[1208] flex">
+            <button
+              className="pointer-events-auto h-full w-1/3 cursor-default bg-transparent"
+              type="button"
+              aria-label="上一张图片"
+              onMouseDown={stopPreviewZoneDrag}
+              onClick={(event) => {
+                stopPreviewZoneDrag(event);
+                navigateImage(-1);
+              }}
+            />
+            <div className="h-full flex-1" />
+            <button
+              className="pointer-events-auto h-full w-1/3 cursor-default bg-transparent"
+              type="button"
+              aria-label="下一张图片"
+              onMouseDown={stopPreviewZoneDrag}
+              onClick={(event) => {
+                stopPreviewZoneDrag(event);
+                navigateImage(1);
+              }}
+            />
+          </div>,
+          document.body,
+        )
+      : null;
+
   return (
     <>
       <Viewer
@@ -160,6 +231,7 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
         onMaskClick={handleMaskClick}
         onClose={onClose}
       />
+      {clickZones}
       {groupControls}
     </>
   );

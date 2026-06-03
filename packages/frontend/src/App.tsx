@@ -10,6 +10,7 @@ import type {
   MediaAssetStatus,
   MediaContentDto,
   MediaElement,
+  MediaFileDto,
   MediaFileReferenceItemDto,
   MediaFileReferenceMode,
   MediaFileReferenceStatsDto,
@@ -69,9 +70,11 @@ import {
   archiveAudit,
   batchUpdateMediaTags,
   clearStoredToken,
+  createAsset,
   createTag,
   createTagAlias,
   createDataExport,
+  createFile,
   dataExportDownloadUrl,
   createMedia,
   deleteAssets,
@@ -548,6 +551,98 @@ function mediaFilePreviewType(file: MediaFileReferenceItemDto): Extract<MediaTyp
   if (mimeType.startsWith("video/") || ["mp4", "webm", "mov", "mkv"].includes(format)) return "video";
   if (mimeType.startsWith("audio/") || ["mp3", "wav", "ogg", "flac", "m4a"].includes(format)) return "audio";
   return "file";
+}
+
+function isEditablePasteTarget(target: EventTarget | null) {
+  if (!(target instanceof Element)) return false;
+  return Boolean(target.closest("input, textarea, select, [contenteditable='true'], [contenteditable='plaintext-only']"));
+}
+
+function clipboardBlobsFromDataTransfer(data: DataTransfer | null) {
+  if (!data) return [];
+  const files = Array.from(data.files ?? []);
+  if (files.length > 0) return files;
+  return Array.from(data.items ?? []).flatMap((item) => {
+    if (item.kind !== "file") return [];
+    const file = item.getAsFile();
+    return file ? [file] : [];
+  });
+}
+
+async function clipboardBlobsFromNavigator() {
+  if (!navigator.clipboard?.read) throw new Error("当前浏览器不支持按钮读取剪切板，请在工作台空白区域按 Ctrl+V 粘贴");
+  const items = await navigator.clipboard.read();
+  const blobs: Blob[] = [];
+  for (const item of items) {
+    const type = item.types.find((value) => value.startsWith("image/"));
+    if (!type) continue;
+    blobs.push(await item.getType(type));
+  }
+  return blobs;
+}
+
+function clipboardBlobFormat(blob: Blob) {
+  if (blob.type) return blob.type.split("/").pop()?.replace(/^x-/, "") || undefined;
+  if (blob instanceof File) return blob.name.split(".").pop()?.toLowerCase();
+  return undefined;
+}
+
+async function blobToBase64(blob: Blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = "";
+  // 大文件一次性展开参数会超过浏览器调用栈，按块拼接更稳。
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+  return btoa(binary);
+}
+
+async function readImageSize(blob: Blob) {
+  if (!blob.type.startsWith("image/")) return undefined;
+  if ("createImageBitmap" in window) {
+    const bitmap = await createImageBitmap(blob);
+    const size = { width: bitmap.width, height: bitmap.height };
+    bitmap.close();
+    return size;
+  }
+  return new Promise<{ width: number; height: number }>((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const image = new window.Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve({ width: image.naturalWidth, height: image.naturalHeight });
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("图片尺寸解析失败"));
+    };
+    image.src = url;
+  });
+}
+
+async function mediaFileToClipboardElement(file: MediaFileDto, blob: Blob): Promise<MediaElement> {
+  const mimeType = file.mimeType ?? blob.type;
+  const format = file.format ?? clipboardBlobFormat(blob) ?? "bin";
+  if (mimeType.startsWith("image/")) {
+    const size = file.width && file.height ? { width: file.width, height: file.height } : await readImageSize(blob);
+    if (!size) throw new Error("图片尺寸解析失败");
+    return {
+      type: "image",
+      id: file.md5,
+      format,
+      file: false,
+      width: size.width,
+      height: size.height,
+    };
+  }
+  return {
+    type: "file",
+    id: file.md5,
+    format,
+    file: true,
+    mimeType: mimeType || undefined,
+    sizeBytes: file.sizeBytes,
+  };
 }
 
 function textPreview(content: string) {
@@ -1638,6 +1733,8 @@ function WorkspacePage({
   onDeleteSelected,
   onClearSelected,
   onAddAssetByDrag,
+  onImportFiles,
+  onPasteClipboard,
   onAddTextElement,
   onDraftChange,
   onMoveElement,
@@ -1645,6 +1742,7 @@ function WorkspacePage({
   onRemoveElement,
   onOpenImagePreview,
   onSubmit,
+  pastingClipboard,
 }: {
   assets: MediaAssetDto[];
   draft: WorkspaceDraftDto;
@@ -1657,6 +1755,8 @@ function WorkspacePage({
   onDeleteSelected: () => void;
   onClearSelected: () => void;
   onAddAssetByDrag: (id: string) => void;
+  onImportFiles: (files: Blob[]) => void;
+  onPasteClipboard: () => void;
   onAddTextElement: (content: string) => void;
   onDraftChange: (draft: Pick<WorkspaceDraftDto, "title" | "tags">) => void;
   onMoveElement: (from: number, to: number) => void;
@@ -1664,14 +1764,33 @@ function WorkspacePage({
   onRemoveElement: (index: number) => void;
   onOpenImagePreview: ImagePreviewOpener;
   onSubmit: () => void;
+  pastingClipboard: boolean;
 }) {
   const [draggedElementIndex, setDraggedElementIndex] = useState<number | null>(null);
   const canSubmitDraft = draft.elements.length > 0 && draft.tags.some((tag) => tag.trim());
 
   function handleDropAsset(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
+    const files = clipboardBlobsFromDataTransfer(event.dataTransfer);
+    if (files.length > 0) {
+      onImportFiles(files);
+      return;
+    }
     const assetId = event.dataTransfer.getData("text/plain");
     if (assetId) onAddAssetByDrag(assetId);
+  }
+
+  function handleDropFilesCapture(event: DragEvent<HTMLDivElement>) {
+    const files = clipboardBlobsFromDataTransfer(event.dataTransfer);
+    if (files.length === 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onImportFiles(files);
+  }
+
+  function handleDraftDragOver(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
   }
 
   function handleDropElement(to: number) {
@@ -1683,6 +1802,10 @@ function WorkspacePage({
   return (
     <section className="min-h-0 flex-1 space-y-4">
       <div className="flex flex-wrap items-center justify-end gap-2">
+        <Button disabled={pastingClipboard} variant="secondary" onClick={onPasteClipboard}>
+          <FolderInput className="h-4 w-4" />
+          {pastingClipboard ? "导入中" : "粘贴剪切板"}
+        </Button>
         <Button variant="secondary">
           <Upload className="h-4 w-4" />
           上传素材
@@ -1702,7 +1825,7 @@ function WorkspacePage({
           <div className="mb-4 flex items-start justify-between gap-3">
             <div>
               <h2 className="text-base font-semibold">组装结果</h2>
-              <p className="text-sm text-muted-foreground">拖动右侧素材到这里，或拖动结果项调整顺序。</p>
+              <p className="text-sm text-muted-foreground">拖动右侧素材、外部文件或剪切板素材到这里，结果项可拖动排序。</p>
             </div>
             <Badge className="border-primary/40 bg-primary-muted text-primary-text">{draft.elements.length} 个元素</Badge>
           </div>
@@ -1739,7 +1862,8 @@ function WorkspacePage({
           </div>
 
           <div
-            onDragOver={(event) => event.preventDefault()}
+            onDragOver={handleDraftDragOver}
+            onDropCapture={handleDropFilesCapture}
             onDrop={handleDropAsset}
             className="min-h-0 flex-1 space-y-2 overflow-y-auto rounded-md border border-dashed border-border bg-surface-muted p-3"
           >
@@ -1759,7 +1883,7 @@ function WorkspacePage({
             ))}
             {draft.elements.length === 0 && (
               <div className="flex h-full min-h-[240px] items-center justify-center rounded-md border border-dashed border-border bg-surface text-center text-sm text-muted-foreground">
-                从右侧拖入素材，或点击素材卡片上的“加入结果”。
+                从右侧拖入素材，拖放外部文件，或点击素材卡片上的“加入结果”。
               </div>
             )}
           </div>
@@ -4238,6 +4362,7 @@ export default function App() {
   const [filters, setFilters] = useState<MediaFilters>(() => (pageFromPath(window.location.pathname) === "workspace" ? readWorkspaceFiltersFromUrl() : defaultMediaFilters));
   const [pendingAssetDeleteConfirm, setPendingAssetDeleteConfirm] = useState(false);
   const [imagePreview, setImagePreview] = useState(emptyImagePreviewState);
+  const [pastingClipboard, setPastingClipboard] = useState(false);
   const [pendingTotal, setPendingTotal] = useState(0);
   const [contentTotal, setContentTotal] = useState(0);
   const [eventTotal, setEventTotal] = useState(0);
@@ -4275,6 +4400,21 @@ export default function App() {
     if (page !== "workspace") return;
     void refreshAssets();
   }, [filters, page, token]);
+
+  useEffect(() => {
+    if (!token || page !== "workspace") return;
+
+    function handleWindowPaste(event: ClipboardEvent) {
+      if (isEditablePasteTarget(event.target)) return;
+      const blobs = clipboardBlobsFromDataTransfer(event.clipboardData);
+      if (blobs.length === 0) return;
+      event.preventDefault();
+      void pasteClipboardBlobs(blobs);
+    }
+
+    window.addEventListener("paste", handleWindowPaste);
+    return () => window.removeEventListener("paste", handleWindowPaste);
+  }, [filters, page, pastingClipboard, token]);
 
   function changeTheme(nextTheme: ThemeMode) {
     setTheme(nextTheme);
@@ -4362,6 +4502,63 @@ export default function App() {
       images.findIndex((image) => image.src === activeSrc),
     );
     setImagePreview(createImagePreviewState(images.length > 0 ? images : collectImagePreviewItems([activeElement]), activeIndex, groups, groupIndex));
+  }
+
+  async function createClipboardAsset(blob: Blob) {
+    const file = await createFile({
+      contentBase64: await blobToBase64(blob),
+      mimeType: blob.type || undefined,
+      format: clipboardBlobFormat(blob),
+    });
+    const element = await mediaFileToClipboardElement(file, blob);
+    return createAsset({
+      kind: element.type,
+      fileMd5: file.md5,
+      element,
+      status: "selected",
+    });
+  }
+
+  function appendAssetsToDraft(nextAssets: MediaAssetDto[]) {
+    if (nextAssets.length === 0) return;
+    setDraft((current) => ({
+      ...current,
+      assetIds: [...alignDraftAssetIds(current.elements, current.assetIds), ...nextAssets.map((asset) => asset.id)],
+      elements: [...current.elements, ...nextAssets.map((asset) => asset.element)],
+      updatedAt: now(),
+    }));
+  }
+
+  async function pasteClipboardBlobs(blobs: Blob[]) {
+    if (pastingClipboard) return;
+    setPastingClipboard(true);
+    setError("");
+    try {
+      const createdAssets: MediaAssetDto[] = [];
+      for (const blob of blobs) {
+        createdAssets.push(await createClipboardAsset(blob));
+      }
+      appendAssetsToDraft(createdAssets);
+      await refreshAssets();
+      await refreshOverview();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "导入素材失败");
+    } finally {
+      setPastingClipboard(false);
+    }
+  }
+
+  async function pasteClipboardFromNavigator() {
+    try {
+      const blobs = await clipboardBlobsFromNavigator();
+      if (blobs.length === 0) {
+        setError("剪切板里没有可粘贴的图片或文件");
+        return;
+      }
+      await pasteClipboardBlobs(blobs);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "读取剪切板失败");
+    }
   }
 
   function addAssetsToDraft(assetIds: string[]) {
@@ -4517,12 +4714,15 @@ export default function App() {
               onDraftChange={updateDraftMeta}
               onFiltersChange={setFilters}
               onIgnoreSelected={() => void ignoreSelected()}
+              onImportFiles={(files) => void pasteClipboardBlobs(files)}
               onMoveElement={moveDraftElement}
               onOpenImagePreview={openImagePreview}
+              onPasteClipboard={() => void pasteClipboardFromNavigator()}
               onRemoveElement={removeDraftElement}
               onUpdateTextElement={updateDraftTextElement}
               onSubmit={() => void submitCurrentDraft()}
               onToggleAsset={toggleAsset}
+              pastingClipboard={pastingClipboard}
             />
           )}
           {page === "library" && <ContentLibraryPage onOpenImagePreview={openImagePreview} onOpenWorkspace={() => changePage("workspace")} />}

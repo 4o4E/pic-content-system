@@ -188,7 +188,7 @@ describe("pic routes db", () => {
 
     const hot = await app.inject({
       method: "GET",
-      url: "/api/pic/hot?tags=热图",
+      url: "/api/pic/hot?tags=热图&visibility=all",
       headers: { authorization: "Bearer test-token" },
     });
     await app.close();
@@ -203,5 +203,89 @@ describe("pic routes db", () => {
       [secondContentId, 2],
       [firstContentId, 1],
     ]);
+  });
+
+  it("取图接口按 tag scope 过滤私有内容", async () => {
+    const app = await createApp({
+      port: 0,
+      filesDir,
+      accessToken: "test-token",
+      frontendDistDir: "not-exists",
+      maxRequestBodyBytes: 1024 * 1024,
+    });
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/pic/images",
+      headers: { authorization: "Bearer test-token" },
+      payload: {
+        contentBase64: pngBuffer(42, 10).toString("base64"),
+        tags: ["群图"],
+        auditRequired: false,
+      },
+    });
+    const hiddenBeforeScope = await app.inject({
+      method: "GET",
+      url: "/api/pic/latest?tags=群图",
+      headers: { authorization: "Bearer test-token" },
+    });
+
+    await prisma.tag.update({ where: { name: "群图" }, data: { visibility: "private", scopes: ["qq:123456", "qq:777777"] } });
+
+    const visibleInScope = await app.inject({
+      method: "GET",
+      url: "/api/pic/latest?tags=群图&scope=qq:123456",
+      headers: { authorization: "Bearer test-token" },
+    });
+    const visibleInSecondScope = await app.inject({
+      method: "GET",
+      url: "/api/pic/latest?tags=群图&scope=qq:777777",
+      headers: { authorization: "Bearer test-token" },
+    });
+    const hiddenInOtherScope = await app.inject({
+      method: "GET",
+      url: "/api/pic/latest?tags=群图&scope=qq:654321",
+      headers: { authorization: "Bearer test-token" },
+    });
+    await app.close();
+
+    expect(created.statusCode).toBe(200);
+    expect(hiddenBeforeScope.json()).toMatchObject({ data: { total: 0, data: [] } });
+    expect(visibleInScope.json()).toMatchObject({ data: { total: 1, data: [{ tags: ["群图"] }] } });
+    expect(visibleInSecondScope.json()).toMatchObject({ data: { total: 1, data: [{ tags: ["群图"] }] } });
+    expect(hiddenInOtherScope.json()).toMatchObject({ data: { total: 0, data: [] } });
+  });
+
+  it("取图接口把缺少 tag 记录的历史内容按不可见处理", async () => {
+    const app = await createApp({
+      port: 0,
+      filesDir,
+      accessToken: "test-token",
+      frontendDistDir: "not-exists",
+      maxRequestBodyBytes: 1024 * 1024,
+    });
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/pic/images",
+      headers: { authorization: "Bearer test-token" },
+      payload: {
+        contentBase64: pngBuffer(43, 10).toString("base64"),
+        tags: ["历史标签"],
+        auditRequired: false,
+      },
+    });
+    await prisma.tag.deleteMany({ where: { name: "历史标签" } });
+
+    const hidden = await app.inject({
+      method: "GET",
+      url: "/api/pic/latest?scope=qq:123456",
+      headers: { authorization: "Bearer test-token" },
+    });
+    await app.close();
+
+    expect(created.statusCode).toBe(200);
+    await expect(prisma.contentTag.count({ where: { tag: "历史标签" } })).resolves.toBe(1);
+    expect(hidden.json()).toMatchObject({ data: { total: 0, data: [] } });
   });
 });

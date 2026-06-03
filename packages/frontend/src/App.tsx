@@ -17,6 +17,7 @@ import type {
   PicContentItemDto,
   SourceProfileDto,
   TagDto,
+  TagVisibility,
   WorkspaceDraftDto,
 } from "@pic/shared";
 import type { LucideIcon } from "lucide-react";
@@ -105,6 +106,7 @@ import {
   restoreMediaContentsToWorkspace,
   resetAudit,
   updateDataExport,
+  updateTagScope,
   uploadDataExport,
   type TagSort,
 } from "@/api/client";
@@ -203,6 +205,11 @@ const tagSortOptions: Array<{ label: string; value: TagSort }> = [
   { label: "数量正序", value: "count_asc" },
   { label: "创建时间倒序", value: "time_desc" },
   { label: "创建时间正序", value: "time_asc" },
+];
+
+const tagVisibilityOptions: Array<{ label: string; value: TagVisibility }> = [
+  { label: "私有", value: "private" },
+  { label: "公开", value: "public" },
 ];
 
 const fileReferenceModeOptions: Array<{ label: string; value: MediaFileReferenceMode }> = [
@@ -346,7 +353,9 @@ function isMediaKindFilter(value: string | null): value is MediaType | "all" {
 
 function tagMatchesKeyword(tag: TagDto, keyword: string) {
   const lowerKeyword = keyword.toLowerCase();
-  return tag.name.toLowerCase().includes(lowerKeyword) || (tag.aliases ?? []).some((alias) => alias.toLowerCase().includes(lowerKeyword));
+  return tag.name.toLowerCase().includes(lowerKeyword)
+    || (tag.aliases ?? []).some((alias) => alias.toLowerCase().includes(lowerKeyword))
+    || tag.scopes.some((scope) => scope.toLowerCase().includes(lowerKeyword));
 }
 
 function parseTagInput(value: string) {
@@ -1846,7 +1855,7 @@ function ContentLibraryPage({
   }, new Map<string, number>());
   const selectedContentTags = Array.from(selectedContentTagCounts.entries())
     .sort(([left], [right]) => left.localeCompare(right, "zh-CN"))
-    .map(([name, count]) => ({ name, count }));
+    .map(([name, count]) => ({ name, count, aliases: [], visibility: "private" as const, scopes: [] }));
   const tagsPresentOnEverySelectedContent = selectedContentTags.filter((tag) => tag.count === selectedContents.length).map((tag) => tag.name);
   const addableTags = tags.filter((tag) => !tagsPresentOnEverySelectedContent.includes(tag.name));
   const canMergeSelectedContents = selectedContentIds.length >= 2 || (selectedContentIds.length === 1 && selectedContents.some((content) => hasChatRecordElement(content.elements)));
@@ -2381,11 +2390,17 @@ function auditStateLabel(state: AuditState) {
   return auditStateOptions.find((option) => option.value === state)?.label ?? state;
 }
 
+function tagVisibilityLabel(visibility: TagVisibility) {
+  return tagVisibilityOptions.find((option) => option.value === visibility)?.label ?? visibility;
+}
+
 function PicApiPreviewPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePreviewOpener }) {
   const [mode, setMode] = useState<PicPreviewMode>("latest");
   const [viewMode, setViewMode] = useState<PicViewMode>("display");
   const [tagMode, setTagMode] = useState<TagMode>("and");
   const [contentType, setContentType] = useState<MediaType | "all">("all");
+  const [scopeInput, setScopeInput] = useState("");
+  const [scopeQuery, setScopeQuery] = useState("");
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [tags, setTags] = useState<TagDto[]>([]);
   const [items, setItems] = useState<PicContentItemDto[]>([]);
@@ -2401,7 +2416,7 @@ function PicApiPreviewPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePr
     setLoading(true);
     try {
       const loader = mode === "hot" ? listPicHot : listPicLatest;
-      const page = await loader({ tags: selectedTags, tagMode, type: contentType, page: 1, size: 24 });
+      const page = await loader({ tags: selectedTags, tagMode, type: contentType, scope: scopeQuery, page: 1, size: 24 });
       setItems(page.data);
       setTotal(page.total);
       setRawResponse({ success: true, message: "ok", data: page });
@@ -2421,7 +2436,11 @@ function PicApiPreviewPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePr
 
   useEffect(() => {
     void refreshItems();
-  }, [contentType, mode, selectedTags, tagMode]);
+  }, [contentType, mode, scopeQuery, selectedTags, tagMode]);
+
+  function applyScopeFilter() {
+    setScopeQuery(scopeInput.trim());
+  }
 
   function openElementPreview(element: MediaElement, elements: MediaElement[]) {
     if (element.type === "image") {
@@ -2492,7 +2511,7 @@ function PicApiPreviewPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePr
             </Button>
           </div>
         </div>
-        <div className="grid gap-3 lg:grid-cols-[1fr_auto_auto] lg:items-end">
+        <div className="grid gap-3 lg:grid-cols-[1fr_minmax(220px,300px)_auto_auto] lg:items-end">
           <TagSelectInput
             label="筛选 tag"
             selectedTags={selectedTags}
@@ -2501,6 +2520,23 @@ function PicApiPreviewPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePr
             allowCreate={false}
             onChange={setSelectedTags}
           />
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">Scope</span>
+            <div className="flex">
+              <input
+                className="h-9 min-w-0 flex-1 rounded-l-md border border-r-0 border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                placeholder="qq:123456"
+                value={scopeInput}
+                onChange={(event) => setScopeInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") applyScopeFilter();
+                }}
+              />
+              <Button className="h-9 rounded-l-none" disabled={scopeInput.trim() === scopeQuery} variant="secondary" onClick={applyScopeFilter}>
+                应用
+              </Button>
+            </div>
+          </label>
           <SelectField label="内容类型" value={contentType} options={kindOptions} onChange={setContentType} />
           <div className="flex rounded-md border border-border bg-surface p-1">
             <Button className="h-8 px-3" variant={tagMode === "and" ? "primary" : "ghost"} onClick={() => setTagMode("and")}>
@@ -2752,13 +2788,21 @@ function AuditsPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePreviewOp
 
 function TagEditModal({ tag, onClose, onSaved }: { tag: TagDto; onClose: () => void; onSaved: () => Promise<void> }) {
   const [renameInput, setRenameInput] = useState(tag.name);
+  const [visibility, setVisibility] = useState<TagVisibility>(tag.visibility);
+  const [scopes, setScopes] = useState<string[]>(tag.scopes);
+  const [scopeInput, setScopeInput] = useState("");
   const [aliasInput, setAliasInput] = useState("");
   const [editingAlias, setEditingAlias] = useState("");
   const [aliases, setAliases] = useState<string[]>(tag.aliases ?? []);
   const [error, setError] = useState("");
+  const activeScopes = visibility === "public" ? [] : scopes;
+  const scopeChanged = visibility !== tag.visibility || activeScopes.join("\n") !== tag.scopes.join("\n");
 
   useEffect(() => {
     setRenameInput(tag.name);
+    setVisibility(tag.visibility);
+    setScopes(tag.scopes);
+    setScopeInput("");
     setAliasInput("");
     setEditingAlias("");
     setAliases(tag.aliases ?? []);
@@ -2775,6 +2819,26 @@ function TagEditModal({ tag, onClose, onSaved }: { tag: TagDto; onClose: () => v
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "重命名 tag 失败");
     }
+  }
+
+  async function submitScope() {
+    try {
+      await updateTagScope(tag.name, { visibility, scopes: activeScopes });
+      await onSaved();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "保存 scope 失败");
+    }
+  }
+
+  function addScopes() {
+    const nextScopes = parseTagInput(scopeInput);
+    if (nextScopes.length === 0) return;
+    setScopes((current) => Array.from(new Set([...current, ...nextScopes])));
+    setScopeInput("");
+  }
+
+  function removeScope(scope: string) {
+    setScopes((current) => current.filter((item) => item !== scope));
   }
 
   async function submitAlias() {
@@ -2824,6 +2888,44 @@ function TagEditModal({ tag, onClose, onSaved }: { tag: TagDto; onClose: () => v
             </label>
             <Button className="h-9" disabled={!renameInput.trim() || parseTagInput(renameInput)[0] === tag.name} variant="primary" onClick={() => void submitRename()}>
               重命名
+            </Button>
+          </div>
+        </Card>
+
+        <Card className="space-y-3 p-4">
+          <div className="grid gap-3 md:grid-cols-[auto_1fr_auto] md:items-end">
+            <SelectField label="可见性" value={visibility} options={tagVisibilityOptions} onChange={setVisibility} />
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-muted-foreground">Scope</span>
+              <input
+                className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:opacity-50"
+                disabled={visibility === "public"}
+                placeholder="qq:123456"
+                value={scopeInput}
+                onChange={(event) => setScopeInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") addScopes();
+                }}
+              />
+            </label>
+            <Button className="h-9" disabled={visibility === "public" || !scopeInput.trim()} variant="secondary" onClick={addScopes}>
+              添加 scope
+            </Button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {activeScopes.map((scope) => (
+              <span key={scope} className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-2 py-1 text-xs text-muted-foreground">
+                {scope}
+                <button type="button" className="text-subtle-foreground hover:text-foreground" aria-label={`移除 ${scope}`} onClick={() => removeScope(scope)}>
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
+            {activeScopes.length === 0 && <span className="text-xs text-subtle-foreground">未设置 scope</span>}
+          </div>
+          <div className="flex justify-end">
+            <Button className="h-9" disabled={!scopeChanged} variant="primary" onClick={() => void submitScope()}>
+              保存 scope
             </Button>
           </div>
         </Card>
@@ -3154,9 +3256,10 @@ function TagManagementPage() {
       <div ref={topPaginationRef} className="xl:mx-20">{renderPagination("top")}</div>
       {showSidePagination && renderPagination("side")}
       <Card className="overflow-hidden xl:mx-20">
-        <div className="hidden grid-cols-[minmax(140px,1.1fr)_minmax(180px,1.4fr)_90px_150px_190px] gap-3 border-b border-border px-4 py-3 text-xs font-semibold text-muted-foreground md:grid">
+        <div className="hidden grid-cols-[minmax(120px,1fr)_minmax(160px,1.2fr)_minmax(130px,0.9fr)_80px_145px_180px] gap-3 border-b border-border px-4 py-3 text-xs font-semibold text-muted-foreground md:grid">
           <span>Tag</span>
           <span>Alias</span>
+          <span>可见性</span>
           <span className="text-right">数量</span>
           <span>创建时间</span>
           <span>操作</span>
@@ -3165,7 +3268,7 @@ function TagManagementPage() {
           <div
             key={tag.name}
             className={cn(
-              "grid gap-3 border-b border-border px-4 py-3 text-sm last:border-b-0 md:grid-cols-[minmax(140px,1.1fr)_minmax(180px,1.4fr)_90px_150px_190px] md:items-center",
+              "grid gap-3 border-b border-border px-4 py-3 text-sm last:border-b-0 md:grid-cols-[minmax(120px,1fr)_minmax(160px,1.2fr)_minmax(130px,0.9fr)_80px_145px_180px] md:items-center",
               (pageStart + index) % 2 === 0 ? "bg-surface" : "bg-surface-muted",
             )}
           >
@@ -3179,6 +3282,29 @@ function TagManagementPage() {
                 </span>
               ))}
               {(tag.aliases ?? []).length === 0 && <span className="text-xs text-subtle-foreground">暂无 alias</span>}
+            </div>
+            <div className="flex min-w-0 flex-wrap gap-1">
+              <span
+                className={cn(
+                  "inline-flex rounded-full border px-2 py-0.5 text-xs font-medium",
+                  tag.visibility === "public" ? "border-primary/30 bg-primary-muted text-primary-text" : "border-border bg-surface text-muted-foreground",
+                )}
+              >
+                {tagVisibilityLabel(tag.visibility)}
+              </span>
+              {tag.visibility === "private" && (
+                tag.scopes.length > 0
+                  ? tag.scopes.map((scope) => (
+                      <span key={scope} className="inline-flex max-w-full truncate rounded-full border border-border bg-surface px-2 py-0.5 text-xs text-subtle-foreground">
+                        {scope}
+                      </span>
+                    ))
+                  : (
+                      <span className="inline-flex max-w-full truncate rounded-full border border-border bg-surface px-2 py-0.5 text-xs text-subtle-foreground">
+                        未设置 scope
+                      </span>
+                    )
+              )}
             </div>
             <span className="text-right font-medium tabular-nums">{tag.count}</span>
             <span className="text-xs text-subtle-foreground">{tag.createdAt ? formatDateTime(tag.createdAt) : "--"}</span>

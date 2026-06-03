@@ -21,7 +21,7 @@ import { storeMediaFile } from "../file/file-storage.js";
 import { assetFileReferences, contentFileReferences, replaceMediaFileReferences } from "../file/file-reference-service.js";
 import { contentSign } from "../media/media-utils.js";
 import { toMediaAssetDto, toMediaContentDto, toMediaFileDto } from "../media/mapper.js";
-import { resolveTagAliases, syncContentTags } from "../tag/tag-service.js";
+import { isValidTagScope, normalizeTagScope, resolveTagAliases, syncContentTags } from "../tag/tag-service.js";
 import { writeSourceBinding } from "../source/source-service.js";
 import { writeAuditEvent } from "../audit/audit-service.js";
 
@@ -87,11 +87,55 @@ type PicListQuery = {
   tags?: string;
   tagMode?: "and" | "or";
   type?: MediaType | "all";
+  scope?: string;
+  visibility?: "all";
   page?: string;
   size?: string;
 };
 
-async function listPicContents(query: PicListQuery, orderBy: Prisma.MediaContentOrderByWithRelationInput[]) {
+type PicVisibilityFilter = {
+  includeAll: boolean;
+  scope?: string;
+};
+type PicVisibilityResult = { ok: true; data: PicVisibilityFilter } | { ok: false; error: string };
+
+function scopeErrorMessage() {
+  return "scope 必须是 platform:id 格式，例如 qq:123456";
+}
+
+function resolvePicVisibility(query: { scope?: string; visibility?: string }): PicVisibilityResult {
+  if (query.visibility && query.visibility !== "all") return { ok: false, error: "visibility 仅支持 all" };
+  const scope = normalizeTagScope(query.scope);
+  if (scope && !isValidTagScope(scope)) return { ok: false, error: scopeErrorMessage() };
+  return { ok: true, data: { includeAll: query.visibility === "all", scope } };
+}
+
+async function applyPicVisibilityFilter(where: Prisma.MediaContentWhereInput, visibility: PicVisibilityFilter) {
+  if (visibility.includeAll) return;
+
+  const visibleTagFilter: Prisma.TagWhereInput = {
+    OR: [
+      { visibility: "public" },
+      ...(visibility.scope ? [{ visibility: "private" as const, scopes: { has: visibility.scope } }] : []),
+    ],
+  };
+  const visibleTags = await prisma.tag.findMany({
+    where: visibleTagFilter,
+    select: { name: true },
+  });
+  const visibleTagNames = visibleTags.map((tag) => tag.name);
+  const invisibleTags = await prisma.contentTag.findMany({
+    where: visibleTagNames.length > 0 ? { tag: { notIn: visibleTagNames } } : undefined,
+    select: { tag: true },
+    distinct: ["tag"],
+  });
+  if (invisibleTags.length === 0) return;
+
+  // scope 过滤以内容实际挂载的 tag 为准，缺少 tag 表记录的历史数据也默认不可见。
+  where.NOT = { tags: { hasSome: invisibleTags.map((tag) => tag.tag) } };
+}
+
+async function listPicContents(query: PicListQuery, orderBy: Prisma.MediaContentOrderByWithRelationInput[], visibility: PicVisibilityFilter) {
   const page = parsePage(query.page);
   const size = parseSize(query.size);
   const tags = await resolveTagAliases(prisma, parseTags(query.tags));
@@ -102,6 +146,7 @@ async function listPicContents(query: PicListQuery, orderBy: Prisma.MediaContent
   if (query.type && query.type !== "all") where.type = query.type;
   if (!query.type) where.type = "image";
   if (tags.length > 0) where.tags = tagMode === "or" ? { hasSome: tags } : { hasEvery: tags };
+  await applyPicVisibilityFilter(where, visibility);
 
   const [total, rows] = await Promise.all([
     prisma.mediaContent.count({ where }),
@@ -121,23 +166,29 @@ export async function registerPicRoutes(app: FastifyInstance, config: AppConfig)
   app.get<{
     Querystring: PicListQuery;
     Reply: ApiResp<PageResp<PicContentItemDto>>;
-  }>("/api/pic/latest", async (request) => {
-    const data = await listPicContents(request.query, [{ createdAt: "desc" }]);
+  }>("/api/pic/latest", async (request, reply) => {
+    const visibility = resolvePicVisibility(request.query);
+    if (!visibility.ok) return reply.code(400).send({ success: false, message: visibility.error });
+    const data = await listPicContents(request.query, [{ createdAt: "desc" }], visibility.data);
     return { success: true, message: "ok", data };
   });
 
   app.get<{
     Querystring: PicListQuery;
     Reply: ApiResp<PageResp<PicContentItemDto>>;
-  }>("/api/pic/hot", async (request) => {
-    const data = await listPicContents(request.query, [{ likeCount: "desc" }, { createdAt: "desc" }]);
+  }>("/api/pic/hot", async (request, reply) => {
+    const visibility = resolvePicVisibility(request.query);
+    if (!visibility.ok) return reply.code(400).send({ success: false, message: visibility.error });
+    const data = await listPicContents(request.query, [{ likeCount: "desc" }, { createdAt: "desc" }], visibility.data);
     return { success: true, message: "ok", data };
   });
 
   app.get<{
-    Querystring: { tags?: string; tagMode?: "and" | "or"; type?: MediaType };
+    Querystring: { tags?: string; tagMode?: "and" | "or"; type?: MediaType; scope?: string; visibility?: "all" };
     Reply: ApiResp<PicRandomResultDto>;
   }>("/api/pic/random", async (request, reply) => {
+    const visibility = resolvePicVisibility(request.query);
+    if (!visibility.ok) return reply.code(400).send({ success: false, message: visibility.error });
     const tags = await resolveTagAliases(prisma, parseTags(request.query.tags));
     const tagMode = request.query.tagMode ?? "and";
     const type = request.query.type ?? "image";
@@ -146,6 +197,7 @@ export async function registerPicRoutes(app: FastifyInstance, config: AppConfig)
       auditState: "approved",
     };
     if (tags.length > 0) where.tags = tagMode === "or" ? { hasSome: tags } : { hasEvery: tags };
+    await applyPicVisibilityFilter(where, visibility.data);
 
     const total = await prisma.mediaContent.count({ where });
     if (total === 0) return reply.code(404).send({ success: false, message: "没有找到符合条件的图片" });

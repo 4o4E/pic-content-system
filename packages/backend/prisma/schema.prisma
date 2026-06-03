@@ -48,6 +48,11 @@ enum AuditAction {
   delete
 }
 
+enum TagVisibility {
+  public
+  private
+}
+
 model MediaFile {
   md5             String   @id @db.Char(32)
   storageKey      String   @map("storage_key")
@@ -178,10 +183,13 @@ model WorkspaceDraft {
 }
 
 model Tag {
-  name      String   @id
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  name       String        @id
+  visibility TagVisibility @default(private)
+  scopes     String[]      @default([])
+  createdAt  DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  @@index([visibility])
   @@map("tag")
 }
 

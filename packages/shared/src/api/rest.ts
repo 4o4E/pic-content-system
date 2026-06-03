@@ -1,3 +1,5 @@
+export type TagVisibility = "public" | "private";
+
 export interface AuthSessionDto {
   ok: boolean;
 }
@@ -6,6 +8,8 @@ export interface TagDto {
   name: string;
   count: number;
   aliases?: string[];
+  visibility: TagVisibility;
+  scopes: string[];
   createdAt?: string;
 }
 
@@ -23,6 +27,15 @@ export interface UpsertTagAliasDto {
 
 export interface UpsertTagDto {
   name: string;
+  visibility?: TagVisibility;
+  scopes?: string[];
+  scope?: string;
+}
+
+export interface UpdateTagScopeDto {
+  visibility: TagVisibility;
+  scopes?: string[];
+  scope?: string;
 }
 
 export interface ResolveTagsDto {

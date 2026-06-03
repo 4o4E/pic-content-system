@@ -1,10 +1,11 @@
 import type { MediaContentDto } from "@pic/shared";
 import Fastify from "fastify";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockPrisma = vi.hoisted(() => ({
   tag: {
     createMany: vi.fn(),
+    findMany: vi.fn(),
   },
   tagAlias: {
     findMany: vi.fn(),
@@ -29,6 +30,7 @@ const mockPrisma = vi.hoisted(() => ({
   contentTag: {
     deleteMany: vi.fn(),
     createMany: vi.fn(),
+    findMany: vi.fn(),
   },
   mediaFileReference: {
     deleteMany: vi.fn(),
@@ -110,6 +112,11 @@ function mediaFileReferenceDelegate() {
 }
 
 describe("pic routes", () => {
+  beforeEach(() => {
+    mockPrisma.tag.findMany.mockResolvedValue([]);
+    mockPrisma.contentTag.findMany.mockResolvedValue([]);
+  });
+
   afterEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
@@ -212,6 +219,80 @@ describe("pic routes", () => {
         auditState: "approved",
       },
     });
+  });
+
+  it("最新内容接口会按 scope 排除不可见 tag 内容", async () => {
+    mockPrisma.tagAlias.findMany.mockResolvedValue([]);
+    mockPrisma.tag.findMany.mockResolvedValue([{ name: "本群可见" }]);
+    mockPrisma.contentTag.findMany.mockResolvedValue([{ tag: "他群私有" }]);
+    mockPrisma.mediaContent.count.mockResolvedValue(1);
+    mockPrisma.mediaContent.findMany.mockResolvedValue([contentRow({ id: "scoped-content" })]);
+    const app = await createPicOnlyApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/pic/latest?scope=qq:123456",
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(mockPrisma.tag.findMany).toHaveBeenCalledWith({
+      where: {
+        OR: [
+          { visibility: "public" },
+          { visibility: "private", scopes: { has: "qq:123456" } },
+        ],
+      },
+      select: { name: true },
+    });
+    expect(mockPrisma.contentTag.findMany).toHaveBeenCalledWith({
+      where: { tag: { notIn: ["本群可见"] } },
+      select: { tag: true },
+      distinct: ["tag"],
+    });
+    expect(mockPrisma.mediaContent.count).toHaveBeenCalledWith({
+      where: {
+        type: "image",
+        auditState: "approved",
+        NOT: { tags: { hasSome: ["他群私有"] } },
+      },
+    });
+  });
+
+  it("最新内容接口 visibility=all 时跳过 scope 过滤", async () => {
+    mockPrisma.tagAlias.findMany.mockResolvedValue([]);
+    mockPrisma.mediaContent.count.mockResolvedValue(1);
+    mockPrisma.mediaContent.findMany.mockResolvedValue([contentRow({ id: "all-content" })]);
+    const app = await createPicOnlyApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/pic/latest?visibility=all",
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(mockPrisma.tag.findMany).not.toHaveBeenCalled();
+    expect(mockPrisma.mediaContent.count).toHaveBeenCalledWith({
+      where: {
+        type: "image",
+        auditState: "approved",
+      },
+    });
+  });
+
+  it("随机取图 scope 格式错误时返回 400", async () => {
+    const app = await createPicOnlyApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/pic/random?scope=qq%20123456",
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ success: false, message: "scope 必须是 platform:id 格式，例如 qq:123456" });
+    expect(mockPrisma.mediaContent.count).not.toHaveBeenCalled();
   });
 
   it("最热内容接口按点赞数倒序返回已审核内容", async () => {

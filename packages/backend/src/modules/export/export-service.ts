@@ -10,7 +10,7 @@ import type {
   ImportDataExportDto,
   UpdateDataExportDto,
 } from "@pic/shared";
-import type { MediaAssetStatus, MediaType } from "@prisma/client";
+import type { MediaAssetStatus, MediaType, TagVisibility } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -21,6 +21,7 @@ import type { AppConfig } from "../../config/env.js";
 import { prisma } from "../../db/prisma.js";
 import { nextSnowflakeId } from "../../lib/snowflake.js";
 import { assetFileReferences, collectFileReferencesFromElements, replaceMediaFileReferences } from "../file/file-reference-service.js";
+import { tagScopeData } from "../tag/tag-service.js";
 
 const SCHEMA_VERSION = 1;
 const MANIFEST_ENTRY = "manifest.json";
@@ -145,6 +146,9 @@ interface ExportWorkspaceDraft {
 
 interface ExportTag {
   name: string;
+  visibility?: TagVisibility;
+  scopes?: string[];
+  scope?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -425,6 +429,8 @@ async function readDatabaseRecords(): Promise<ExportRecords> {
     })),
     tag: tags.map((row): ExportTag => ({
       name: row.name,
+      visibility: row.visibility,
+      scopes: row.scopes,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     })),
@@ -954,7 +960,11 @@ async function importDatabaseRecords(bundle: LoadedBundle, conflictPolicy: DataI
       tables.tag.skipped++;
       continue;
     }
-    const data = { createdAt: new Date(row.createdAt), updatedAt: new Date(row.updatedAt) };
+    const data = {
+      ...tagScopeData(row.visibility === "public" ? "public" : "private", row.scopes ?? (row.scope ? [row.scope] : undefined)),
+      createdAt: new Date(row.createdAt),
+      updatedAt: new Date(row.updatedAt),
+    };
     if (existing) {
       await prisma.tag.update({ where: { name: row.name }, data });
       tables.tag.updated++;

@@ -43,12 +43,16 @@ export interface PicRandomQueryDto {
   tags?: string[];
   tagMode?: "and" | "or";
   type?: MediaType;
+  scope?: string;
+  visibility?: "all";
 }
 
 export interface PicContentListQueryDto {
   tags?: string[];
   tagMode?: "and" | "or";
   type?: MediaType | "all";
+  scope?: string;
+  visibility?: "all";
   page?: number;
   size?: number;
 }

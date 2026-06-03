@@ -6,6 +6,7 @@ const mockPrisma = vi.hoisted(() => ({
     findMany: vi.fn(),
     findUnique: vi.fn(),
     upsert: vi.fn(),
+    update: vi.fn(),
     deleteMany: vi.fn(),
   },
   contentTag: {
@@ -78,6 +79,26 @@ describe("tag routes", () => {
       update: { tag: "弔图" },
     });
     expect(del.json()).toMatchObject({ data: { deleted: 1 } });
+  });
+
+  it("更新 tag 可见性时校验并保存多个 scope", async () => {
+    const createdAt = new Date("2026-01-01T00:00:00Z");
+    mockPrisma.tag.update.mockResolvedValue({ name: "弔图", visibility: "private", scopes: ["qq:123456", "qq:654321"], createdAt, updatedAt: createdAt });
+    const app = await createTagApp();
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/api/tags/%E5%BC%94%E5%9B%BE",
+      payload: { visibility: "private", scopes: [" qq:123456 ", "qq:654321", "qq:123456"] },
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ success: true, data: { name: "弔图", visibility: "private", scopes: ["qq:123456", "qq:654321"] } });
+    expect(mockPrisma.tag.update).toHaveBeenCalledWith({
+      where: { name: "弔图" },
+      data: { visibility: "private", scopes: ["qq:123456", "qq:654321"] },
+    });
   });
 
   it("resolve 接口返回解析后的 tag", async () => {

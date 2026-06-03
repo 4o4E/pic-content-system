@@ -41,6 +41,7 @@ import type {
   RenameTagDto,
   RenameTagResultDto,
   UpdateDataExportDto,
+  UpdateTagScopeDto,
   UpsertTagDto,
   UpsertTagAliasDto,
 } from "@pic/shared";
@@ -77,6 +78,8 @@ export interface PicContentQuery {
   tags?: string[];
   tagMode?: "and" | "or";
   type?: MediaType | "all";
+  scope?: string;
+  visibility?: "all";
   page?: number;
   size?: number;
 }
@@ -200,6 +203,8 @@ function picContentQuery(path: string, query: PicContentQuery = {}) {
     tags: query.tags?.join(","),
     tagMode: query.tagMode,
     type: query.type,
+    scope: query.scope,
+    visibility: query.visibility,
     page: query.page ?? 1,
     size: query.size ?? 20,
   });
@@ -282,6 +287,13 @@ export function createTag(body: UpsertTagDto) {
 export function renameTag(body: RenameTagDto) {
   return request<RenameTagResultDto>("/api/tags/rename", {
     method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateTagScope(name: string, body: UpdateTagScopeDto) {
+  return request<TagDto>(`/api/tags/${encodeURIComponent(name)}`, {
+    method: "PATCH",
     body: JSON.stringify(body),
   });
 }

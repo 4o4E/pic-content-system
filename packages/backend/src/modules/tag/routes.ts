@@ -10,13 +10,16 @@ import type {
   ResolveTagsResultDto,
   TagAliasDto,
   TagDto,
+  TagVisibility,
+  UpdateTagScopeDto,
   UpsertTagDto,
   UpsertTagAliasDto,
 } from "@pic/shared";
 import { prisma } from "../../db/prisma.js";
-import { normalizeAlias, normalizeTags, resolveTagAliases, syncContentTags } from "./tag-service.js";
+import { isValidTagScope, normalizeAlias, normalizeTagScopes, normalizeTags, resolveTagAliases, syncContentTags, tagScopeData } from "./tag-service.js";
 
 type TagSort = "count_desc" | "count_asc" | "time_desc" | "time_asc";
+type TagScopePayloadResult = { ok: true; data: ReturnType<typeof tagScopeData> } | { ok: false; error: string };
 
 function toTagAliasDto(row: { alias: string; tag: string; createdAt: Date; updatedAt: Date }): TagAliasDto {
   return {
@@ -24,6 +27,21 @@ function toTagAliasDto(row: { alias: string; tag: string; createdAt: Date; updat
     tag: row.tag,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+function toTagDto(
+  row: { name: string; createdAt?: Date; visibility?: TagVisibility; scopes?: string[] },
+  count = 0,
+  aliases: string[] = [],
+): TagDto {
+  return {
+    name: row.name,
+    count,
+    aliases,
+    visibility: row.visibility ?? "private",
+    scopes: row.scopes ?? [],
+    createdAt: row.createdAt?.toISOString(),
   };
 }
 
@@ -41,6 +59,21 @@ function sortTagRows(left: TagDto, right: TagDto, sort: TagSort) {
   if (sort === "time_desc") return tagCreatedTime(right.createdAt, 0) - tagCreatedTime(left.createdAt, 0) || left.name.localeCompare(right.name, "zh-CN");
   if (sort === "time_asc") return tagCreatedTime(left.createdAt, Number.MAX_SAFE_INTEGER) - tagCreatedTime(right.createdAt, Number.MAX_SAFE_INTEGER) || left.name.localeCompare(right.name, "zh-CN");
   return right.count - left.count || left.name.localeCompare(right.name, "zh-CN");
+}
+
+function invalidScopeMessage() {
+  return "scope 必须是 platform:id 格式，例如 qq:123456";
+}
+
+function resolveTagScopePayload(body: { visibility?: TagVisibility; scopes?: string[]; scope?: string }): TagScopePayloadResult {
+  if (body.visibility && body.visibility !== "public" && body.visibility !== "private") {
+    return { ok: false, error: "visibility 必须是 public 或 private" };
+  }
+  const visibility = body.visibility ?? "private";
+  const scopes = normalizeTagScopes(body.scopes ?? (body.scope ? [body.scope] : undefined));
+  const invalidScope = scopes.find((scope) => !isValidTagScope(scope));
+  if (invalidScope) return { ok: false, error: invalidScopeMessage() };
+  return { ok: true, data: tagScopeData(visibility, scopes) };
 }
 
 async function replaceTagInContents(tx: Prisma.TransactionClient, from: string, to: string) {
@@ -68,7 +101,14 @@ export async function registerTagRoutes(app: FastifyInstance) {
     const q = request.query.q?.trim();
     const sort = resolveTagSort(request.query.sort);
     const matchedTags = await prisma.tag.findMany({
-      where: q ? { name: { contains: q, mode: "insensitive" } } : undefined,
+      where: q
+        ? {
+            OR: [
+              { name: { contains: q, mode: "insensitive" } },
+              { scopes: { has: q } },
+            ],
+          }
+        : undefined,
       orderBy: [{ name: "asc" }],
     });
     const matchedAliases = await prisma.tagAlias.findMany({
@@ -102,12 +142,7 @@ export async function registerTagRoutes(app: FastifyInstance) {
       : [];
     const tagMap = new Map<string, TagDto>();
     for (const row of matchedTags) {
-      tagMap.set(row.name, {
-        name: row.name,
-        count: 0,
-        aliases: [],
-        createdAt: row.createdAt.toISOString(),
-      });
+      tagMap.set(row.name, toTagDto(row));
     }
     for (const row of tagGroups) {
       const count = row._count as { tag: number };
@@ -116,11 +151,13 @@ export async function registerTagRoutes(app: FastifyInstance) {
         name: row.tag,
         count: count.tag,
         aliases: [],
+        visibility: existing?.visibility ?? "private",
+        scopes: existing?.scopes ?? [],
         createdAt: existing?.createdAt ?? row._min?.createdAt?.toISOString(),
       });
     }
     for (const row of aliases) {
-      const tag = tagMap.get(row.tag) ?? { name: row.tag, count: 0, aliases: [], createdAt: row.createdAt.toISOString() };
+      const tag = tagMap.get(row.tag) ?? toTagDto({ name: row.tag, createdAt: row.createdAt });
       tag.aliases = [...(tag.aliases ?? []), row.alias];
       if (!tag.createdAt || row.createdAt < new Date(tag.createdAt)) tag.createdAt = row.createdAt.toISOString();
       tagMap.set(row.tag, tag);
@@ -136,12 +173,28 @@ export async function registerTagRoutes(app: FastifyInstance) {
   app.post<{ Body: UpsertTagDto; Reply: ApiResp<TagDto> }>("/api/tags", async (request, reply) => {
     const name = normalizeTags([request.body.name])[0];
     if (!name) return reply.code(400).send({ success: false, message: "tag 不能为空" });
+    const scopePayload = resolveTagScopePayload(request.body);
+    if (!scopePayload.ok) return reply.code(400).send({ success: false, message: scopePayload.error });
     const row = await prisma.tag.upsert({
       where: { name },
-      create: { name },
+      create: { name, ...scopePayload.data },
       update: {},
     });
-    return { success: true, message: "ok", data: { name: row.name, count: 0, aliases: [], createdAt: row.createdAt.toISOString() } };
+    return { success: true, message: "ok", data: toTagDto(row) };
+  });
+
+  app.patch<{ Params: { name: string }; Body: UpdateTagScopeDto; Reply: ApiResp<TagDto> }>("/api/tags/:name", async (request, reply) => {
+    const name = normalizeTags([decodeURIComponent(request.params.name)])[0] ?? "";
+    if (!name) return reply.code(400).send({ success: false, message: "tag 不能为空" });
+    const scopePayload = resolveTagScopePayload(request.body);
+    if (!scopePayload.ok) return reply.code(400).send({ success: false, message: scopePayload.error });
+
+    const row = await prisma.tag.update({
+      where: { name },
+      data: scopePayload.data,
+    }).catch(() => undefined);
+    if (!row) return reply.code(404).send({ success: false, message: "tag 不存在" });
+    return { success: true, message: "ok", data: toTagDto(row) };
   });
 
   app.get<{ Querystring: { q?: string }; Reply: ApiResp<TagAliasDto[]> }>("/api/tag-aliases", async (request) => {
@@ -199,7 +252,12 @@ export async function registerTagRoutes(app: FastifyInstance) {
       const source = await tx.tag.findUnique({ where: { name: from } });
       await tx.tag.upsert({
         where: { name: to },
-        create: { name: to, createdAt: source?.createdAt },
+        create: {
+          name: to,
+          visibility: source?.visibility ?? "private",
+          scopes: source?.scopes ?? [],
+          createdAt: source?.createdAt,
+        },
         update: {},
       });
       const changed = await replaceTagInContents(tx, from, to);
@@ -222,7 +280,12 @@ export async function registerTagRoutes(app: FastifyInstance) {
       const source = await tx.tag.findUnique({ where: { name: from } });
       await tx.tag.upsert({
         where: { name: to },
-        create: { name: to, createdAt: source?.createdAt },
+        create: {
+          name: to,
+          visibility: source?.visibility ?? "private",
+          scopes: source?.scopes ?? [],
+          createdAt: source?.createdAt,
+        },
         update: {},
       });
       const changed = await replaceTagInContents(tx, from, to);

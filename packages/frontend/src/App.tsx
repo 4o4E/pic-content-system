@@ -64,7 +64,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Pagination } from "@/components/ui/pagination";
-import { createImagePreviewState, emptyImagePreviewState, ImagePreviewViewer, type ImagePreviewGroup, type ImagePreviewItem } from "@/components/media/image-preview";
+import { createImagePreviewState, emptyImagePreviewState, ImagePreviewViewer, type ImagePreviewClosePayload, type ImagePreviewGroup, type ImagePreviewItem } from "@/components/media/image-preview";
+import { appBackLayerChangeEvent, closeLatestAppBackLayer, hasAppBackLayers, useAppBackLayer } from "@/lib/app-back-layer";
 import { cn } from "@/lib/utils";
 import {
   approveAudit,
@@ -285,10 +286,25 @@ function collectImagePreviewItems(elements: MediaElement[]): ImagePreviewItem[] 
 function collectContentImagePreviewGroups(contents: MediaContentDto[]): ImagePreviewGroup[] {
   return contents
     .map((content, index) => ({
+      anchorId: content.id,
       label: content.title ?? `第 ${index + 1} 条记录`,
       images: collectImagePreviewItems(content.elements),
     }))
     .filter((group) => group.images.length > 0);
+}
+
+function cssAttributeValue(value: string) {
+  return typeof CSS !== "undefined" && typeof CSS.escape === "function" ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&");
+}
+
+function scrollAppContainerToContentCard(contentId: string) {
+  const scrollContainer = document.querySelector<HTMLElement>("[data-app-scroll-container]");
+  const target = document.querySelector<HTMLElement>(`[data-content-card-id="${cssAttributeValue(contentId)}"]`);
+  if (!scrollContainer || !target) return;
+  const containerRect = scrollContainer.getBoundingClientRect();
+  const targetRect = target.getBoundingClientRect();
+  const nextTop = scrollContainer.scrollTop + targetRect.top - containerRect.top - Math.max((scrollContainer.clientHeight - targetRect.height) / 2, 12);
+  scrollContainer.scrollTo({ top: Math.max(nextTop, 0), behavior: "smooth" });
 }
 
 function collectFileImagePreviewGroups(files: MediaFileReferenceItemDto[]): ImagePreviewGroup[] {
@@ -399,7 +415,11 @@ function replaceRouteQuery(pathname: string, entries: Record<string, string | un
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(entries)) setSearchParam(params, key, value);
   const query = params.toString();
-  window.history.replaceState(null, "", `${pathname}${query ? `?${query}` : ""}`);
+  window.history.replaceState(window.history.state, "", `${pathname}${query ? `?${query}` : ""}`);
+}
+
+function currentRouteUrl() {
+  return `${window.location.pathname}${window.location.search}${window.location.hash}`;
 }
 
 function readWorkspaceFiltersFromUrl(): MediaFilters {
@@ -1315,6 +1335,7 @@ function Modal({
   children: ReactNode;
   onClose: () => void;
 }) {
+  useAppBackLayer(true, onClose);
   return createPortal(
     <div className={cn("fixed inset-0 flex items-center justify-center bg-black/70 p-2 sm:p-4", zIndex)} role="dialog" aria-modal="true" onClick={onClose}>
       <div className={cn("flex max-h-[92vh] w-full flex-col overflow-hidden rounded-md border border-border bg-surface shadow-xl", maxWidth)} onClick={(event) => event.stopPropagation()}>
@@ -2380,6 +2401,7 @@ function ContentLibraryPage({
           return (
           <Card
             key={content.id}
+            data-content-card-id={content.id}
             className={cn(
               "flex min-h-[22rem] min-w-0 flex-col overflow-hidden p-3 sm:aspect-square sm:min-h-0",
               selected && "border-primary bg-primary-muted/40",
@@ -2680,6 +2702,7 @@ function SourceProfileSummary({ profile }: { profile?: SourceProfileDto }) {
 }
 
 function AuditLogModal({ detail, onClose }: { detail: AuditDetailDto; onClose: () => void }) {
+  useAppBackLayer(true, onClose);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" onClick={onClose}>
       <Card className="max-h-[86vh] w-full max-w-2xl overflow-y-auto p-4" onClick={(event) => event.stopPropagation()}>
@@ -4332,6 +4355,10 @@ export default function App() {
   const [contentTotal, setContentTotal] = useState(0);
   const [eventTotal, setEventTotal] = useState(0);
   const [error, setError] = useState("");
+  const openLayerHistoryActiveRef = useRef(false);
+  const ignoringOpenLayerPopRef = useRef(false);
+  const openLayerCleanupUrlRef = useRef("");
+  const openLayerHistorySyncTimerRef = useRef<number | null>(null);
 
   const stats: Array<{ label: string; value: string; icon: LucideIcon }> = [
     { label: "待处理素材", value: String(pendingTotal), icon: Archive },
@@ -4345,8 +4372,77 @@ export default function App() {
     void refreshOverview();
   }, [token]);
 
+  function cancelOpenLayerHistorySync() {
+    if (openLayerHistorySyncTimerRef.current === null) return;
+    window.clearTimeout(openLayerHistorySyncTimerRef.current);
+    openLayerHistorySyncTimerRef.current = null;
+  }
+
+  function ensureOpenLayerHistory() {
+    cancelOpenLayerHistorySync();
+    if (openLayerHistoryActiveRef.current) return;
+    const state = window.history.state;
+    const stateObject = state && typeof state === "object" && !Array.isArray(state) ? state as Record<string, unknown> : {};
+    openLayerHistoryActiveRef.current = true;
+    window.history.pushState({ ...stateObject, picOpenLayer: true }, "", currentRouteUrl());
+  }
+
+  function clearOpenLayerHistory() {
+    if (!openLayerHistoryActiveRef.current) return;
+    openLayerHistoryActiveRef.current = false;
+    ignoringOpenLayerPopRef.current = true;
+    openLayerCleanupUrlRef.current = currentRouteUrl();
+    window.history.back();
+  }
+
+  function syncOpenLayerHistory() {
+    if (hasAppBackLayers()) {
+      ensureOpenLayerHistory();
+      return;
+    }
+    clearOpenLayerHistory();
+  }
+
+  function scheduleOpenLayerHistorySync() {
+    cancelOpenLayerHistorySync();
+    openLayerHistorySyncTimerRef.current = window.setTimeout(() => {
+      openLayerHistorySyncTimerRef.current = null;
+      syncOpenLayerHistory();
+    }, 0);
+  }
+
+  useEffect(() => {
+    function handleBackLayerChange() {
+      if (hasAppBackLayers()) {
+        ensureOpenLayerHistory();
+        return;
+      }
+      scheduleOpenLayerHistorySync();
+    }
+
+    window.addEventListener(appBackLayerChangeEvent, handleBackLayerChange);
+    return () => {
+      cancelOpenLayerHistorySync();
+      window.removeEventListener(appBackLayerChangeEvent, handleBackLayerChange);
+    };
+  }, []);
+
   useEffect(() => {
     function syncRouteState() {
+      if (ignoringOpenLayerPopRef.current) {
+        ignoringOpenLayerPopRef.current = false;
+        const cleanupUrl = openLayerCleanupUrlRef.current;
+        openLayerCleanupUrlRef.current = "";
+        if (cleanupUrl && cleanupUrl !== currentRouteUrl()) {
+          window.history.replaceState(window.history.state, "", cleanupUrl);
+        }
+        return;
+      }
+      if (openLayerHistoryActiveRef.current) {
+        openLayerHistoryActiveRef.current = false;
+        if (closeLatestAppBackLayer()) return;
+        return;
+      }
       const nextPage = pageFromPath(window.location.pathname);
       setPage(nextPage);
       if (nextPage === "workspace") setFilters(readWorkspaceFiltersFromUrl());
@@ -4467,6 +4563,13 @@ export default function App() {
       images.findIndex((image) => image.src === activeSrc),
     );
     setImagePreview(createImagePreviewState(images.length > 0 ? images : collectImagePreviewItems([activeElement]), activeIndex, groups, groupIndex));
+  }
+
+  function closeImagePreview(payload: ImagePreviewClosePayload) {
+    setImagePreview(emptyImagePreviewState);
+    const anchorId = payload.group?.anchorId;
+    if (page !== "library" || !anchorId) return;
+    window.requestAnimationFrame(() => scrollAppContainerToContentCard(anchorId));
   }
 
   async function createClipboardAsset(blob: Blob) {
@@ -4699,7 +4802,7 @@ export default function App() {
           {page === "exports" && <DataExportsPage />}
         </main>
       </div>
-      <ImagePreviewViewer state={imagePreview} onClose={() => setImagePreview(emptyImagePreviewState)} />
+      <ImagePreviewViewer state={imagePreview} onClose={closeImagePreview} />
     </div>
   );
 }

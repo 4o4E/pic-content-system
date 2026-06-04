@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Maximize2, RotateCcw, RotateCw, ZoomIn, ZoomOut } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, RefreshCcw, RotateCcw, RotateCw, ZoomIn, ZoomOut } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { createPortal } from "react-dom";
 
@@ -55,7 +55,8 @@ type PinchStart = {
   transform: ImageTransform;
 };
 
-const minScale = 0.5;
+const manualMinScale = 0.01;
+const initialMinScale = 0.3;
 const maxScale = 12;
 const previewPadding = 32;
 const previewVerticalReserve = 128;
@@ -88,6 +89,14 @@ function distance(left: Point, right: Point) {
 
 function angle(left: Point, right: Point) {
   return (Math.atan2(right.y - left.y, right.x - left.x) * 180) / Math.PI;
+}
+
+function normalizeAngleDelta(degrees: number) {
+  return ((((degrees + 180) % 360) + 360) % 360) - 180;
+}
+
+function snapRightAngle(degrees: number) {
+  return Math.round(degrees / 90) * 90;
 }
 
 function midpoint(left: Point, right: Point) {
@@ -149,11 +158,11 @@ function createInitialTransform(imageSize: ImageSize, viewportSize: ImageSize): 
   const areaHeight = Math.max(viewportSize.height - previewVerticalReserve, 1);
   const widthFill = areaWidth / imageSize.width;
   const heightFill = areaHeight / imageSize.height;
-  const scale = clamp(Math.min(widthFill, heightFill), minScale, maxScale);
+  const scale = clamp(Math.min(widthFill, heightFill), initialMinScale, maxScale);
   const scaledHeight = imageSize.height * scale;
   const topOffset = scaledHeight > areaHeight ? previewVerticalReserve / 2 + scaledHeight / 2 - viewportSize.height / 2 : 0;
 
-  // 默认优先完整显示；下限 50% 导致长图放不全时，从顶部开始展示。
+  // 默认优先完整显示；默认下限 30% 导致长图放不全时，从顶部开始展示。
   return {
     x: 0,
     y: topOffset,
@@ -295,7 +304,7 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
     [stageCenter],
   );
 
-  // 将触点换算到图片坐标，保证缩放和旋转围绕手指焦点发生。
+  // 将触点换算到图片坐标，保证缩放围绕手指焦点发生。
   const transformFromFocal = useCallback(
     (point: Point, scale: number, rotation: number, focal: Point): ImageTransform => {
       const center = stageCenter();
@@ -320,7 +329,7 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
   const zoomAt = useCallback(
     (point: Point, factor: number) => {
       const current = transformRef.current;
-      const nextScale = clamp(current.scale * factor, minScale, maxScale);
+      const nextScale = clamp(current.scale * factor, manualMinScale, maxScale);
       const focal = screenToLocal(point, current);
       applyTransform(transformFromFocal(point, nextScale, current.rotation, focal));
     },
@@ -337,7 +346,8 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
   const rotateBy = useCallback(
     (degrees: number) => {
       const current = transformRef.current;
-      applyTransform({ ...current, rotation: current.rotation + degrees });
+      const nextRotation = snapRightAngle(current.rotation + degrees);
+      applyTransform({ ...current, rotation: nextRotation });
     },
     [applyTransform],
   );
@@ -392,9 +402,9 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
       const center = midpoint(left, right);
       const currentDistance = Math.max(distance(left, right), 1);
       const currentAngle = angle(left, right);
-      const nextScale = clamp(pinchStartRef.current.transform.scale * (currentDistance / pinchStartRef.current.distance), minScale, maxScale);
-      const nextRotation = pinchStartRef.current.transform.rotation + currentAngle - pinchStartRef.current.angle;
-      applyTransform(transformFromFocal(center, nextScale, nextRotation, pinchStartRef.current.focal));
+      const nextScale = clamp(pinchStartRef.current.transform.scale * (currentDistance / pinchStartRef.current.distance), manualMinScale, maxScale);
+      const rotationOffset = snapRightAngle(normalizeAngleDelta(currentAngle - pinchStartRef.current.angle));
+      applyTransform(transformFromFocal(center, nextScale, pinchStartRef.current.transform.rotation + rotationOffset, pinchStartRef.current.focal));
       return;
     }
 
@@ -550,14 +560,14 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
         <button className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-white/10 sm:h-9 sm:w-9" type="button" title="放大" onClick={() => zoomFromCenter(1.18)}>
           <ZoomIn className="h-4 w-4" />
         </button>
-        <button className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-white/10 sm:h-9 sm:w-9" type="button" title="逆时针旋转" onClick={() => rotateBy(-90)}>
+        <button className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-white/10 sm:h-9 sm:w-9" type="button" title="逆时针旋转90度" onClick={() => rotateBy(-90)}>
           <RotateCcw className="h-4 w-4" />
         </button>
-        <button className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-white/10 sm:h-9 sm:w-9" type="button" title="顺时针旋转" onClick={() => rotateBy(90)}>
+        <button className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-white/10 sm:h-9 sm:w-9" type="button" title="顺时针旋转90度" onClick={() => rotateBy(90)}>
           <RotateCw className="h-4 w-4" />
         </button>
-        <button className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-white/10 sm:h-9 sm:w-9" type="button" title="重置填充" onClick={resetTransform}>
-          <Maximize2 className="h-4 w-4" />
+        <button className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-white/10 sm:h-9 sm:w-9" type="button" title="重置" onClick={resetTransform}>
+          <RefreshCcw className="h-4 w-4" />
         </button>
         <a className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-white/10 sm:h-9 sm:w-9" title="下载" href={activeImage.downloadUrl ?? activeImage.src} download>
           <Download className="h-4 w-4" />

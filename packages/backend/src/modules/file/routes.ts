@@ -11,6 +11,7 @@ import { storeMediaFile } from "./file-storage.js";
 
 const DECLARED_IMAGE_FORMATS = new Set<string>([...COMMON_IMAGE_FORMATS, "jpeg", "svg", "svg+xml", "avif", "bmp", "tif", "tiff", "ico", "heic", "heif"]);
 const FILE_MD5_RE = /^[0-9a-f]{32}$/;
+const FILE_CACHE_CONTROL = "private, max-age=31536000, immutable";
 
 function isImageUploadRequest(body: CreateMediaFileDto, inspection: FileInspection) {
   const mimeType = body.mimeType?.trim().toLowerCase();
@@ -41,6 +42,14 @@ function resolveStoredFilePath(config: AppConfig, storageKey: string) {
   const target = path.resolve(root, storageKey);
   if (target !== root && target.startsWith(`${root}${path.sep}`)) return target;
   throw new Error("文件存储路径越界");
+}
+
+function fileEtag(md5: string) {
+  return `"${md5}"`;
+}
+
+function requestMatchesEtag(value: string | undefined, etag: string) {
+  return value?.split(",").map((item) => item.trim()).some((item) => item === "*" || item === etag) ?? false;
 }
 
 function removeStoredObjects(config: AppConfig, files: Array<{ storageKey: string }>) {
@@ -203,6 +212,11 @@ export async function registerFileRoutes(app: FastifyInstance, config: AppConfig
     if (!file) return reply.code(404).send({ success: false, message: "文件不存在" });
     const target = resolveStoredFilePath(config, file.storageKey);
     if (!fs.existsSync(target)) return reply.code(404).send({ success: false, message: "文件不存在" });
+    const etag = fileEtag(file.md5);
+    reply.header("Cache-Control", FILE_CACHE_CONTROL);
+    reply.header("ETag", etag);
+    if (requestMatchesEtag(request.headers["if-none-match"], etag)) return reply.code(304).send();
+    reply.header("Content-Length", file.sizeBytes.toString());
     reply.type(file.mimeType ?? "application/octet-stream");
     return fs.createReadStream(target);
   });

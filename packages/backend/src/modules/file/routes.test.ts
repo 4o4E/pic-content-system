@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -12,6 +14,7 @@ const mockPrisma = vi.hoisted(() => ({
 }));
 
 const mockStoreMediaFile = vi.hoisted(() => vi.fn());
+const testFilesDir = path.resolve(process.cwd(), "data/test-files");
 
 vi.mock("../../db/prisma.js", () => ({ prisma: mockPrisma }));
 vi.mock("./file-storage.js", () => ({ storeMediaFile: mockStoreMediaFile }));
@@ -53,8 +56,15 @@ function mediaFile(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function writeStoredFile(file: { storageKey: string }, content: Buffer) {
+  const target = path.resolve(testFilesDir, file.storageKey);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, content);
+}
+
 describe("file routes", () => {
   afterEach(() => {
+    fs.rmSync(testFilesDir, { recursive: true, force: true });
     vi.clearAllMocks();
     vi.resetModules();
   });
@@ -173,6 +183,32 @@ describe("file routes", () => {
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({ success: false, message: "有 1 个文件仍存在引用，已取消删除" });
     expect(tx.mediaFile.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("文件响应允许浏览器按内容地址长期缓存", async () => {
+    const content = Buffer.from("cached-image");
+    const file = mediaFile({ md5: "e".repeat(32), storageKey: "objects/ee/ee/file.png", sizeBytes: BigInt(content.length) });
+    writeStoredFile(file, content);
+    mockPrisma.mediaFile.findUnique.mockResolvedValue(file);
+    const app = await createFileOnlyApp();
+
+    const response = await app.inject({ method: "GET", url: `/api/files/${file.md5}` });
+    const cachedResponse = await app.inject({
+      method: "GET",
+      url: `/api/files/${file.md5}`,
+      headers: { "if-none-match": `"${file.md5}"` },
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("private, max-age=31536000, immutable");
+    expect(response.headers.etag).toBe(`"${file.md5}"`);
+    expect(response.headers["content-length"]).toBe(String(content.length));
+    expect(response.body).toBe(content.toString());
+    expect(cachedResponse.statusCode).toBe(304);
+    expect(cachedResponse.headers["cache-control"]).toBe("private, max-age=31536000, immutable");
+    expect(cachedResponse.headers.etag).toBe(`"${file.md5}"`);
+    expect(cachedResponse.body).toBe("");
   });
 
   it("声明为图片的上传只接受常见图片格式", async () => {

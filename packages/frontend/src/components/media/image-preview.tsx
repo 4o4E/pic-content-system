@@ -267,6 +267,16 @@ function createInitialTransform(imageSize: ImageSize, viewportSize: ImageSize): 
   };
 }
 
+function resolveAdjacentPreviewImage(activeImages: ImagePreviewItem[], groups: ImagePreviewGroup[], groupIndex: number, activeIndex: number, offset: -1 | 1) {
+  const sameGroupIndex = activeIndex + offset;
+  if (sameGroupIndex >= 0 && sameGroupIndex < activeImages.length) return activeImages[sameGroupIndex] ?? null;
+  if (groups.length === 0) return null;
+  const targetGroupIndex = groupIndex + offset;
+  if (targetGroupIndex < 0 || targetGroupIndex >= groups.length) return null;
+  const targetImages = groups[targetGroupIndex]?.images ?? [];
+  return offset > 0 ? targetImages[0] ?? null : targetImages[targetImages.length - 1] ?? null;
+}
+
 export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewState; onClose: (payload: ImagePreviewClosePayload) => void }) {
   const [activeIndex, setActiveIndex] = useState(state.activeIndex);
   const [groupIndex, setGroupIndex] = useState(state.groupIndex ?? 0);
@@ -294,6 +304,8 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
   const imageSize = activeImage ? imageSizes[activeImage.src] ?? null : null;
   const groups = state.groups ?? [];
   const canChangeGroup = groups.length > 1;
+  const previousImage = resolveAdjacentPreviewImage(activeImages, groups, groupIndex, safeActiveIndex, -1);
+  const nextImage = resolveAdjacentPreviewImage(activeImages, groups, groupIndex, safeActiveIndex, 1);
 
   useEffect(() => {
     transformRef.current = transform;
@@ -404,6 +416,25 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
     if (!imageSize || viewportSize.width === 0 || viewportSize.height === 0) return;
     applyTransform(createInitialTransform(imageSize, viewportSize));
   }, [activeImage?.src, applyTransform, groupIndex, imageSize, safeActiveIndex, viewportSize.height, viewportSize.width]);
+
+  useEffect(() => {
+    if (!state.visible || typeof window === "undefined") return;
+    const preloadSources = Array.from(new Set([activeImage?.src, previousImage?.src, nextImage?.src].filter((src): src is string => Boolean(src))));
+    const preloaders = preloadSources.map((src) => {
+      const image = new window.Image();
+      image.decoding = "async";
+      image.src = src;
+      return image;
+    });
+
+    // 预加载当前和相邻图片，切图时优先复用浏览器缓存。
+    return () => {
+      preloaders.forEach((image) => {
+        image.onload = null;
+        image.onerror = null;
+      });
+    };
+  }, [activeImage?.src, nextImage?.src, previousImage?.src, state.visible]);
 
   const changeGroup = useCallback(
     (offset: number, target: "first" | "last" = "first") => {
@@ -786,19 +817,10 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
 
   if (!state.visible || !activeImage) return null;
 
-  const resolveAdjacentImage = (offset: -1 | 1) => {
-    const sameGroupIndex = safeActiveIndex + offset;
-    if (sameGroupIndex >= 0 && sameGroupIndex < activeImages.length) return activeImages[sameGroupIndex] ?? null;
-    if (groups.length === 0) return null;
-    const targetGroupIndex = groupIndex + offset;
-    if (targetGroupIndex < 0 || targetGroupIndex >= groups.length) return null;
-    const targetImages = groups[targetGroupIndex]?.images ?? [];
-    return offset > 0 ? targetImages[0] ?? null : targetImages[targetImages.length - 1] ?? null;
-  };
   const previewSlots = [
-    { image: resolveAdjacentImage(-1), offset: -1 },
+    { image: previousImage, offset: -1 },
     { image: activeImage, offset: 0 },
-    { image: resolveAdjacentImage(1), offset: 1 },
+    { image: nextImage, offset: 1 },
   ].filter((slot): slot is { image: ImagePreviewItem; offset: number } => Boolean(slot.image));
   const controlsVisibilityClass = mobileControlsVisible ? "flex" : "hidden sm:flex";
   const slotTransition = isSwipeAnimating ? `transform ${swipeAnimationMs}ms cubic-bezier(0.22, 1, 0.36, 1)` : "none";

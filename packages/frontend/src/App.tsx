@@ -45,6 +45,7 @@ import {
   Layers3,
   Link2,
   ListChecks,
+  LogOut,
   Moon,
   MoreHorizontal,
   Pencil,
@@ -136,9 +137,7 @@ type ChatStackItem = {
   sourceKey: string;
 };
 type LibraryRouteState = {
-  query: string;
   selectedTags: string[];
-  tagQuery: string;
   mode: TagMode;
   cardSize: ContentCardSize;
   sort: LibrarySort;
@@ -228,6 +227,8 @@ const defaultTagSort: TagSort = "count_desc";
 const defaultTagPage = 1;
 const defaultTagPageSize = 100;
 const libraryPageSizeOptions = [50, 100, 200];
+const libraryFilterLabelClassName = "w-7 shrink-0 text-right";
+const libraryFilterFieldClassName = "grid grid-cols-[1.75rem_minmax(0,1fr)] items-center gap-2";
 
 const pagePaths: Record<PageKey, string> = {
   home: "/",
@@ -426,9 +427,7 @@ function readLibraryStateFromUrl(): LibraryRouteState {
   const card = params.get("card");
   const sort = params.get("sort");
   return {
-    query: params.get("q") ?? "",
     selectedTags: tagsFromParam(params.get("tags")),
-    tagQuery: params.get("tagInput") ?? "",
     mode: tagMode === "or" ? "or" : "and",
     cardSize: isContentCardSize(card) ? card : "medium",
     sort: isLibrarySort(sort) ? sort : defaultLibrarySort,
@@ -439,9 +438,7 @@ function readLibraryStateFromUrl(): LibraryRouteState {
 
 function updateLibraryQuery(state: LibraryRouteState) {
   replaceRouteQuery(pagePaths.library, {
-    q: state.query.trim() || undefined,
     tags: state.selectedTags.length > 0 ? state.selectedTags.join(",") : undefined,
-    tagInput: state.tagQuery.trim() || undefined,
     tagMode: state.mode === "and" ? undefined : state.mode,
     card: state.cardSize === "medium" ? undefined : state.cardSize,
     sort: state.sort === defaultLibrarySort ? undefined : state.sort,
@@ -685,18 +682,22 @@ function SelectField<T extends string>({
   label,
   value,
   options,
+  className,
+  labelClassName,
   onChange,
 }: {
   label: string;
   value: T;
   options: Array<{ label: string; value: T }>;
+  className?: string;
+  labelClassName?: string;
   onChange: (value: T) => void;
 }) {
   return (
-    <label className="flex items-center gap-2 text-sm">
-      <span className="text-muted-foreground">{label}</span>
+    <label className={cn("flex w-full min-w-0 items-center gap-2 text-sm sm:w-auto", className)}>
+      <span className={cn("shrink-0 text-muted-foreground", labelClassName)}>{label}</span>
       <select
-        className="h-9 rounded-md border border-border bg-surface px-2 text-sm text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+        className="h-9 min-w-0 flex-1 rounded-md border border-border bg-surface px-2 text-sm text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
         value={value}
         onChange={(event) => onChange(event.target.value as T)}
       >
@@ -717,6 +718,8 @@ function TagSelectInput({
   placeholder,
   helperText,
   className,
+  labelClassName,
+  inlineLabel = false,
   suggestions: staticSuggestions,
   excludeTags = [],
   allowCreate = true,
@@ -728,6 +731,8 @@ function TagSelectInput({
   placeholder: string;
   helperText?: string;
   className?: string;
+  labelClassName?: string;
+  inlineLabel?: boolean;
   suggestions?: TagDto[];
   excludeTags?: string[];
   allowCreate?: boolean;
@@ -735,6 +740,7 @@ function TagSelectInput({
 }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [suggestions, setSuggestions] = useState<TagDto[]>([]);
   const normalizedQuery = query.trim();
   const excludedTagSet = new Set(excludeTags);
@@ -747,15 +753,18 @@ function TagSelectInput({
 
   useEffect(() => {
     if (staticSuggestions) {
+      setLoadingSuggestions(false);
       setSuggestions([]);
       return;
     }
     if (!open) {
+      setLoadingSuggestions(false);
       setSuggestions([]);
       return;
     }
 
     let ignore = false;
+    setLoadingSuggestions(true);
     listTags(normalizedQuery || undefined)
       .then((rows) => {
         if (ignore) return;
@@ -763,6 +772,9 @@ function TagSelectInput({
       })
       .catch(() => {
         if (!ignore) setSuggestions([]);
+      })
+      .finally(() => {
+        if (!ignore) setLoadingSuggestions(false);
       });
     return () => {
       ignore = true;
@@ -803,8 +815,8 @@ function TagSelectInput({
   }
 
   return (
-    <div className={cn("block", className)}>
-      <span className="mb-1 block text-xs font-medium text-muted-foreground">{label}</span>
+    <div className={cn(inlineLabel ? "grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2 gap-y-1" : "block", className)}>
+      <span className={cn("block text-xs font-medium text-muted-foreground", inlineLabel ? "pt-2.5" : "mb-1", labelClassName)}>{label}</span>
       <div className="relative">
         <div className="flex min-h-9 flex-wrap items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-sm outline-none transition-colors focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20">
           {selectedTags.map((tag) => (
@@ -831,12 +843,15 @@ function TagSelectInput({
               setOpen(true);
             }}
             onFocus={() => setOpen(true)}
+            onClick={() => setOpen(true)}
+            onMouseDown={() => setOpen(true)}
             onKeyDown={handleKeyDown}
           />
         </div>
-        {open && (visibleSuggestions.length > 0 || canCreate) && (
+        {open && (loadingSuggestions || visibleSuggestions.length > 0 || canCreate || effectiveSuggestions.length === 0) && (
           <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-56 overflow-y-auto rounded-md border border-border bg-surface p-1 shadow-lg">
-            {visibleSuggestions.map((tag) => (
+            {loadingSuggestions && <div className="px-2 py-1.5 text-sm text-subtle-foreground">加载中...</div>}
+            {!loadingSuggestions && visibleSuggestions.map((tag) => (
               <button
                 key={tag.name}
                 type="button"
@@ -850,7 +865,10 @@ function TagSelectInput({
                 <span className="text-xs text-subtle-foreground">{tag.count}</span>
               </button>
             ))}
-            {canCreate && (
+            {!loadingSuggestions && visibleSuggestions.length === 0 && !canCreate && (
+              <div className="px-2 py-1.5 text-sm text-subtle-foreground">没有可选 tag</div>
+            )}
+            {!loadingSuggestions && canCreate && (
               <button
                 type="button"
                 className="w-full rounded px-2 py-1.5 text-left text-sm text-primary-text hover:bg-primary-muted"
@@ -865,7 +883,7 @@ function TagSelectInput({
           </div>
         )}
       </div>
-      {helperText && <div className="mt-1 text-xs text-muted-foreground">{helperText}</div>}
+      {helperText && <div className={cn("mt-1 text-xs text-muted-foreground", inlineLabel && "col-start-2")}>{helperText}</div>}
     </div>
   );
 }
@@ -911,35 +929,65 @@ function Sidebar({ page, onPageChange }: { page: PageKey; onPageChange: (page: P
 function TopBar({
   page,
   theme,
+  onPageChange,
   onThemeChange,
   onLogout,
 }: {
   page: PageKey;
   theme: ThemeMode;
+  onPageChange: (page: PageKey) => void;
   onThemeChange: (theme: ThemeMode) => void;
   onLogout: () => void;
 }) {
-  const pageTitle = pageItems.find((item) => item.key === page)?.label ?? "主页";
+  const currentItem = pageItems.find((item) => item.key === page) ?? pageItems[0];
+  const pageTitle = currentItem?.label ?? "主页";
 
   return (
-    <header className="fixed left-0 right-0 top-0 z-20 flex h-14 items-center justify-between border-b border-border bg-surface px-4 lg:left-60">
-      <div className="flex min-w-0 flex-1 items-center gap-4">
-        <div className="min-w-0">
+    <header className="fixed left-0 right-0 top-0 z-20 flex h-14 items-center justify-between gap-2 border-b border-border bg-surface px-2 sm:px-4 lg:left-60">
+      <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-4">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary text-[#062426] lg:hidden">
+          <FolderInput className="h-5 w-5" />
+        </div>
+        <label className="relative min-w-0 flex-1 lg:hidden">
+          <span className="sr-only">切换页面</span>
+          <select
+            className="h-9 w-full appearance-none rounded-md border border-border bg-surface py-0 pl-3 pr-8 text-sm font-medium text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+            value={page}
+            onChange={(event) => onPageChange(event.target.value as PageKey)}
+          >
+            {pageItems.map((item) => (
+              <option key={item.key} value={item.key}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-subtle-foreground" />
+        </label>
+        <div className="hidden min-w-0 lg:block">
           <div className="truncate text-base font-semibold text-foreground">{pageTitle}</div>
         </div>
       </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <Button variant={theme === "light" ? "secondary" : "ghost"} className="h-9 w-9 px-0" aria-label="浅色主题" onClick={() => onThemeChange("light")}>
+      <div className="flex shrink-0 items-center gap-1 sm:gap-2">
+        <Button
+          variant="ghost"
+          className="h-9 w-9 px-0 sm:hidden"
+          aria-label="切换主题"
+          onClick={() => onThemeChange(theme === "dark" ? "light" : "dark")}
+        >
+          {theme === "dark" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+        </Button>
+        <Button variant={theme === "light" ? "secondary" : "ghost"} className="hidden h-9 w-9 px-0 sm:inline-flex" aria-label="浅色主题" onClick={() => onThemeChange("light")}>
           <Sun className="h-4 w-4" />
         </Button>
-        <Button variant={theme === "dark" ? "secondary" : "ghost"} className="h-9 w-9 px-0" aria-label="深色主题" onClick={() => onThemeChange("dark")}>
+        <Button variant={theme === "dark" ? "secondary" : "ghost"} className="hidden h-9 w-9 px-0 sm:inline-flex" aria-label="深色主题" onClick={() => onThemeChange("dark")}>
           <Moon className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" className="h-9 w-9 px-0" aria-label="设置">
+        <Button variant="ghost" className="hidden h-9 w-9 px-0 md:inline-flex" aria-label="设置">
           <Settings className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" onClick={onLogout}>
-          退出
+        <Button variant="ghost" className="h-9 w-9 px-0 sm:w-auto sm:px-3" aria-label="退出登录" onClick={onLogout}>
+          <LogOut className="h-4 w-4 sm:hidden" />
+          <span className="hidden sm:inline">退出</span>
         </Button>
       </div>
     </header>
@@ -1268,7 +1316,7 @@ function Modal({
   onClose: () => void;
 }) {
   return createPortal(
-    <div className={cn("fixed inset-0 flex items-center justify-center bg-black/70 p-4", zIndex)} role="dialog" aria-modal="true" onClick={onClose}>
+    <div className={cn("fixed inset-0 flex items-center justify-center bg-black/70 p-2 sm:p-4", zIndex)} role="dialog" aria-modal="true" onClick={onClose}>
       <div className={cn("flex max-h-[92vh] w-full flex-col overflow-hidden rounded-md border border-border bg-surface shadow-xl", maxWidth)} onClick={(event) => event.stopPropagation()}>
         <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
           <div className="min-w-0">
@@ -1298,12 +1346,12 @@ function ChatRecordMediaItem({
   onOpenChatRecord: (element: ChatRecordElement) => void;
 }) {
   if (element.type === "text") {
-    return <div className="max-w-64 whitespace-pre-wrap rounded-md bg-white px-3 py-2 text-sm leading-6 text-[#111827] shadow-sm">{element.content}</div>;
+    return <div className="max-w-full whitespace-pre-wrap rounded-md bg-white px-3 py-2 text-sm leading-6 text-[#111827] shadow-sm sm:max-w-64">{element.content}</div>;
   }
 
   if (element.type === "image") {
     return (
-      <button className="block max-w-56 overflow-hidden rounded-md bg-white" type="button" onClick={() => onOpenMedia(element)}>
+      <button className="block max-w-full overflow-hidden rounded-md bg-white sm:max-w-56" type="button" onClick={() => onOpenMedia(element)}>
         <img className="max-h-60 w-full object-contain" src={fileUrl(element.id)} alt="聊天图片" loading="lazy" />
       </button>
     );
@@ -1311,7 +1359,7 @@ function ChatRecordMediaItem({
 
   if (element.type === "video") {
     return (
-      <button className="flex aspect-video w-56 items-center justify-center rounded-md bg-black text-white" type="button" onClick={() => onOpenMedia(element)}>
+      <button className="flex aspect-video w-full max-w-56 items-center justify-center rounded-md bg-black text-white" type="button" onClick={() => onOpenMedia(element)}>
         <FileVideo className="h-9 w-9" />
       </button>
     );
@@ -1319,7 +1367,7 @@ function ChatRecordMediaItem({
 
   if (element.type === "audio") {
     return (
-      <button className="flex min-h-12 w-52 items-center gap-2 rounded-md bg-white px-3 text-left text-[#111827]" type="button" onClick={() => onOpenMedia(element)}>
+      <button className="flex min-h-12 w-full max-w-52 items-center gap-2 rounded-md bg-white px-3 text-left text-[#111827]" type="button" onClick={() => onOpenMedia(element)}>
         <FileAudio className="h-5 w-5 text-primary" />
         <span className="truncate text-sm">语音消息</span>
       </button>
@@ -1328,7 +1376,7 @@ function ChatRecordMediaItem({
 
   if (element.type === "file") {
     return (
-      <button className="flex min-h-12 w-56 items-center gap-2 rounded-md bg-white px-3 text-left text-[#111827]" type="button" onClick={() => onOpenMedia(element)}>
+      <button className="flex min-h-12 w-full max-w-56 items-center gap-2 rounded-md bg-white px-3 text-left text-[#111827]" type="button" onClick={() => onOpenMedia(element)}>
         <FileText className="h-5 w-5 text-primary" />
         <span className="truncate text-sm">文件</span>
       </button>
@@ -1338,7 +1386,7 @@ function ChatRecordMediaItem({
   return (
     <button
       className={cn(
-        "flex w-60 items-center justify-between gap-3 rounded-md border bg-white px-3 py-2 text-left text-[#111827] shadow-sm transition-colors",
+        "flex w-full max-w-60 items-center justify-between gap-3 rounded-md border bg-white px-3 py-2 text-left text-[#111827] shadow-sm transition-colors",
         active ? "border-primary ring-2 ring-primary/30" : "border-[#d7dbe2] hover:border-primary/40",
       )}
       type="button"
@@ -1368,7 +1416,7 @@ function ChatRecordPanel({
 }) {
   const speaks = chatRecordSpeaks(item.element);
   return (
-    <section className="flex h-full w-[22rem] shrink-0 flex-col overflow-hidden rounded-md border border-[#c9d0da] bg-[#f2f3f5] shadow-sm">
+    <section className="flex h-full w-[calc(100vw-2rem)] shrink-0 flex-col overflow-hidden rounded-md border border-[#c9d0da] bg-[#f2f3f5] shadow-sm sm:w-[22rem]">
       <div className="flex h-12 shrink-0 items-center justify-center border-b border-[#d5dbe3] bg-[#eef0f3] px-4">
         <div className="min-w-0 text-center">
           <div className="truncate text-sm font-semibold text-[#111827]">{index === 0 ? "聊天记录" : `嵌套记录 ${index}`}</div>
@@ -1446,8 +1494,8 @@ function ChatRecordModal({
 
   return (
     <Modal title="聊天记录" subtitle={`${chatRecordSpeaks(element).length} 条发言`} closeLabel="关闭聊天记录" zIndex="z-[1000]" maxWidth="max-w-[96vw]" onClose={onClose}>
-      <div className="min-h-0 overflow-x-auto bg-surface-muted p-4">
-        <div className="mx-auto flex h-[calc(92vh-5rem)] w-max gap-4">
+      <div className="min-h-0 overflow-x-auto bg-surface-muted p-2 sm:p-4">
+        <div className="mx-auto flex h-[calc(92vh-5rem)] w-max gap-3 sm:gap-4">
           {stack.map((item, index) => (
             <ChatRecordPanel
               key={`${index}-${item.sourceKey}`}
@@ -1476,8 +1524,8 @@ function MediaElementModal({ element, onClose, onOpenElement }: { element: Media
       <div className="min-h-0 bg-black">
         {element.type === "video" && <video className="max-h-[calc(92vh-3rem)] w-full" src={fileUrl(element.id)} controls autoPlay playsInline />}
         {element.type === "audio" && (
-          <div className="flex min-h-80 items-center justify-center bg-surface p-8">
-            <div className="w-full max-w-xl rounded-md border border-border bg-surface-muted p-6">
+          <div className="flex min-h-60 items-center justify-center bg-surface p-4 sm:min-h-80 sm:p-8">
+            <div className="w-full max-w-xl rounded-md border border-border bg-surface-muted p-4 sm:p-6">
               <div className="mb-4 flex items-center gap-3">
                 <FileAudio className="h-8 w-8 text-primary" />
                 <div>
@@ -1490,7 +1538,7 @@ function MediaElementModal({ element, onClose, onOpenElement }: { element: Media
           </div>
         )}
         {element.type === "file" && (
-          <div className="flex min-h-80 items-center justify-center bg-surface p-8">
+          <div className="flex min-h-60 items-center justify-center bg-surface p-4 sm:min-h-80 sm:p-8">
             <a className="rounded-md border border-border bg-surface-muted px-4 py-3 text-sm hover:border-primary/40" href={fileUrl(element.id)} target="_blank" rel="noreferrer">
               打开文件
             </a>
@@ -1512,7 +1560,7 @@ function ContentDetailModal({
 }) {
   return (
     <Modal title={content.title ?? "复合内容"} subtitle={content.sign} closeLabel="关闭详情" zIndex="z-40" onClose={onClose}>
-        <div className="max-h-[calc(92vh-3rem)] overflow-y-auto p-4">
+        <div className="max-h-[calc(92vh-3rem)] overflow-y-auto p-3 sm:p-4">
           <div className="mb-3 inline-flex items-center gap-1 rounded-md border border-border bg-surface-muted px-2 py-1 text-xs text-muted-foreground">
             <Heart className="h-3.5 w-3.5" />
             点赞 {content.likeCount}
@@ -1800,37 +1848,37 @@ function WorkspacePage({
   }
 
   return (
-    <section className="min-h-0 flex-1 space-y-4">
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        <Button disabled={pastingClipboard} variant="secondary" onClick={onPasteClipboard}>
+    <section className="min-h-0 flex-1 space-y-3 sm:space-y-4">
+      <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-end">
+        <Button className="w-full sm:w-auto" disabled={pastingClipboard} variant="secondary" onClick={onPasteClipboard}>
           <FolderInput className="h-4 w-4" />
           {pastingClipboard ? "导入中" : "粘贴剪切板"}
         </Button>
-        <Button variant="secondary">
+        <Button className="w-full sm:w-auto" variant="secondary">
           <Upload className="h-4 w-4" />
           上传素材
         </Button>
-        <Button disabled={selectedIds.length === 0} variant="secondary" onClick={onIgnoreSelected}>
+        <Button className="w-full sm:w-auto" disabled={selectedIds.length === 0} variant="secondary" onClick={onIgnoreSelected}>
           <X className="h-4 w-4" />
           忽略
         </Button>
-        <Button disabled={selectedIds.length === 0} variant={pendingDeleteConfirm ? "danger" : "secondary"} onClick={onDeleteSelected}>
+        <Button className="w-full sm:w-auto" disabled={selectedIds.length === 0} variant={pendingDeleteConfirm ? "danger" : "secondary"} onClick={onDeleteSelected}>
           <Trash2 className="h-4 w-4" />
           {pendingDeleteConfirm ? "确认删除" : "删除已选"}
         </Button>
       </div>
 
-      <div className="grid min-h-[640px] gap-4 xl:grid-cols-[minmax(420px,0.9fr)_minmax(520px,1.1fr)]">
-        <Card className="flex min-h-0 flex-col p-4">
-          <div className="mb-4 flex items-start justify-between gap-3">
-            <div>
+      <div className="grid min-h-0 gap-3 sm:gap-4 xl:min-h-[640px] xl:grid-cols-[minmax(420px,0.9fr)_minmax(520px,1.1fr)]">
+        <Card className="flex min-h-[30rem] min-w-0 flex-col p-3 sm:p-4 xl:min-h-0">
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
               <h2 className="text-base font-semibold">组装结果</h2>
               <p className="text-sm text-muted-foreground">拖动右侧素材、外部文件或剪切板素材到这里，结果项可拖动排序。</p>
             </div>
-            <Badge className="border-primary/40 bg-primary-muted text-primary-text">{draft.elements.length} 个元素</Badge>
+            <Badge className="w-fit border-primary/40 bg-primary-muted text-primary-text">{draft.elements.length} 个元素</Badge>
           </div>
 
-          <div className="mb-4 grid items-end gap-3 md:grid-cols-[minmax(160px,1fr)_minmax(220px,1fr)_auto]">
+          <div className="mb-4 grid items-end gap-3 sm:grid-cols-[minmax(160px,1fr)_minmax(220px,1fr)_auto]">
             <label className="block">
               <span className="mb-1 block text-xs font-medium text-muted-foreground">标题</span>
               <input
@@ -1845,17 +1893,17 @@ function WorkspacePage({
               placeholder="输入 tag 名称筛选或新建"
               onChange={(tags) => onDraftChange({ title: draft.title, tags })}
             />
-            <Button className="h-9" disabled={!canSubmitDraft} variant="primary" onClick={onSubmit}>
+            <Button className="h-9 w-full sm:w-auto" disabled={!canSubmitDraft} variant="primary" onClick={onSubmit}>
               提交
             </Button>
           </div>
 
-          <div className="mb-4 flex flex-wrap justify-end gap-2 rounded-md border border-border bg-surface-muted p-3">
-            <Button disabled={selectedIds.length === 0} variant="secondary" onClick={onClearSelected}>
+          <div className="mb-4 grid grid-cols-2 gap-2 rounded-md border border-border bg-surface-muted p-3 sm:flex sm:flex-wrap sm:justify-end">
+            <Button className="w-full sm:w-auto" disabled={selectedIds.length === 0} variant="secondary" onClick={onClearSelected}>
               <X className="h-4 w-4" />
               清空选择
             </Button>
-            <Button variant="secondary" onClick={() => onAddTextElement("")}>
+            <Button className="w-full sm:w-auto" variant="secondary" onClick={() => onAddTextElement("")}>
               <Plus className="h-4 w-4" />
               添加文本块
             </Button>
@@ -1889,16 +1937,16 @@ function WorkspacePage({
           </div>
         </Card>
 
-        <Card className="flex min-h-0 flex-col p-4">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <div>
+        <Card className="flex min-h-[30rem] min-w-0 flex-col p-3 sm:p-4 xl:min-h-0">
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+            <div className="min-w-0">
               <h2 className="text-base font-semibold">素材列表</h2>
               <p className="text-sm text-muted-foreground">QQ 主动推送和手动上传产生的候选素材。</p>
             </div>
-            <Badge>{selectedIds.length} 个已选</Badge>
+            <Badge className="w-fit">{selectedIds.length} 个已选</Badge>
           </div>
           <div className="mb-3 flex flex-wrap items-center gap-3 rounded-md border border-border bg-surface-muted p-3">
-            <div className="relative min-w-[240px] flex-1">
+            <div className="relative min-w-0 flex-1 basis-full sm:min-w-[240px] sm:basis-auto">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-subtle-foreground" />
               <input
                 className="h-9 w-full rounded-md border border-border bg-surface pl-9 pr-3 text-sm text-foreground outline-none transition-colors placeholder:text-subtle-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
@@ -1911,7 +1959,7 @@ function WorkspacePage({
             <SelectField label="类型" value={filters.kind} options={kindOptions} onChange={(kind) => onFiltersChange({ ...filters, kind })} />
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 2xl:grid-cols-4">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 2xl:grid-cols-4">
               {assets.map((asset, index) => (
                 <MaterialCard
                   key={asset.id}
@@ -1940,10 +1988,7 @@ function ContentLibraryPage({
   onOpenWorkspace: () => void;
 }) {
   const initialRouteState = readLibraryStateFromUrl();
-  const [query, setQuery] = useState(initialRouteState.query);
   const [selectedTags, setSelectedTags] = useState<string[]>(initialRouteState.selectedTags);
-  const [tagQuery, setTagQuery] = useState(initialRouteState.tagQuery);
-  const [tagSuggestions, setTagSuggestions] = useState<TagDto[]>([]);
   const [mode, setMode] = useState<TagMode>(initialRouteState.mode);
   const [cardSize, setCardSize] = useState<ContentCardSize>(initialRouteState.cardSize);
   const [sort, setSort] = useState<LibrarySort>(initialRouteState.sort);
@@ -1970,7 +2015,6 @@ function ContentLibraryPage({
   const gridStyle: CSSProperties = {
     gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${cardMinWidth}), 1fr))`,
   };
-  const commonTags = tags.slice(0, 10);
   const contentById = new Map(contents.map((content) => [content.id, content]));
   const selectedContents = selectedContentIds.map((id) => contentById.get(id)).filter((content): content is MediaContentDto => Boolean(content));
   const selectedContentTagCounts = selectedContents.reduce((counts, content) => {
@@ -1983,9 +2027,6 @@ function ContentLibraryPage({
   const tagsPresentOnEverySelectedContent = selectedContentTags.filter((tag) => tag.count === selectedContents.length).map((tag) => tag.name);
   const addableTags = tags.filter((tag) => !tagsPresentOnEverySelectedContent.includes(tag.name));
   const canMergeSelectedContents = selectedContentIds.length >= 2 || (selectedContentIds.length === 1 && selectedContents.some((content) => hasChatRecordElement(content.elements)));
-  const visibleTagSuggestions = tagQuery.trim()
-    ? tagSuggestions.filter((tag) => !selectedTags.includes(tag.name)).slice(0, 8)
-    : [];
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   useEffect(() => {
@@ -1995,7 +2036,7 @@ function ContentLibraryPage({
   }, []);
 
   async function refreshContents() {
-    const page = await listMedia({ q: query, tags: selectedTags, tagMode: mode, sort, auditState: "approved", page: currentPage, size: pageSize });
+    const page = await listMedia({ tags: selectedTags, tagMode: mode, sort, auditState: "approved", page: currentPage, size: pageSize });
     const nextTotalPages = Math.max(1, Math.ceil(page.total / pageSize));
     if (currentPage > nextTotalPages) {
       setCurrentPage(nextTotalPages);
@@ -2031,9 +2072,7 @@ function ContentLibraryPage({
   useEffect(() => {
     function syncRouteState() {
       const next = readLibraryStateFromUrl();
-      setQuery(next.query);
       setSelectedTags(next.selectedTags);
-      setTagQuery(next.tagQuery);
       setMode(next.mode);
       setCardSize(next.cardSize);
       setSort(next.sort);
@@ -2046,31 +2085,13 @@ function ContentLibraryPage({
   }, []);
 
   useEffect(() => {
-    updateLibraryQuery({ query, selectedTags, tagQuery, mode, cardSize, sort, page: currentPage, size: pageSize });
-  }, [cardSize, currentPage, mode, pageSize, query, selectedTags, sort, tagQuery]);
-
-  useEffect(() => {
-    const keyword = tagQuery.trim();
-    if (!keyword) {
-      setTagSuggestions([]);
-      return;
-    }
-
-    let ignore = false;
-    listTags(keyword)
-      .then((rows) => {
-        if (!ignore) setTagSuggestions(rows.filter((tag) => tagMatchesKeyword(tag, keyword)));
-      })
-      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "搜索 tag 失败"));
-    return () => {
-      ignore = true;
-    };
-  }, [tagQuery]);
+    updateLibraryQuery({ selectedTags, mode, cardSize, sort, page: currentPage, size: pageSize });
+  }, [cardSize, currentPage, mode, pageSize, selectedTags, sort]);
 
   useEffect(() => {
     refreshContents()
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载内容库失败"));
-  }, [currentPage, mode, pageSize, query, selectedTags, sort]);
+  }, [currentPage, mode, pageSize, selectedTags, sort]);
 
   useEffect(() => {
     setPendingDeleteConfirm(false);
@@ -2135,28 +2156,8 @@ function ContentLibraryPage({
     document.querySelector<HTMLElement>("[data-app-scroll-container]")?.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  function submitLibrarySearch() {
-    if (currentPage === defaultLibraryPage) {
-      refreshContents().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载内容库失败"));
-      return;
-    }
-    setCurrentPage(defaultLibraryPage);
-  }
-
-  function addTag(tag: string) {
-    setSelectedTags((current) => (current.includes(tag) ? current : [...current, tag]));
-    setTagQuery("");
-    setTagSuggestions([]);
-    resetLibraryPage();
-  }
-
-  function removeTag(tag: string) {
-    setSelectedTags((current) => current.filter((item) => item !== tag));
-    resetLibraryPage();
-  }
-
-  function toggleCommonTag(tag: string) {
-    setSelectedTags((current) => (current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]));
+  function changeSelectedTags(tags: string[]) {
+    setSelectedTags(tags);
     resetLibraryPage();
   }
 
@@ -2255,57 +2256,50 @@ function ContentLibraryPage({
   }
 
   return (
-    <section className="space-y-4">
-      <Card className="space-y-3 p-4 xl:mx-20">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="relative min-w-[280px] flex-1">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-subtle-foreground" />
-            <input
-              className="h-9 w-full rounded-md border border-border bg-surface pl-9 pr-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-              placeholder="搜索标题、tag、签名或内容"
-              value={query}
-              onChange={(event) => {
-                setQuery(event.target.value);
-                resetLibraryPage();
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") submitLibrarySearch();
-              }}
+    <section className="space-y-3 sm:space-y-4">
+      <Card className="space-y-3 p-3 sm:p-4 xl:mx-20">
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,17.5rem),1fr))] gap-3">
+          <div className="flex min-w-0 items-start gap-2">
+            <TagSelectInput
+              inlineLabel
+              className="min-w-0 flex-1"
+              labelClassName={libraryFilterLabelClassName}
+              label="Tag"
+              selectedTags={selectedTags}
+              placeholder="输入 tag 名称搜索并选择"
+              allowCreate={false}
+              onChange={changeSelectedTags}
             />
+            <div className="flex shrink-0 rounded-md border border-border bg-surface p-1">
+              <Button
+                className="h-7 px-2"
+                variant={mode === "and" ? "primary" : "ghost"}
+                onClick={() => {
+                  setMode("and");
+                  resetLibraryPage();
+                }}
+              >
+                AND
+              </Button>
+              <Button
+                className="h-7 px-2"
+                variant={mode === "or" ? "primary" : "ghost"}
+                onClick={() => {
+                  setMode("or");
+                  resetLibraryPage();
+                }}
+              >
+                OR
+              </Button>
+            </div>
           </div>
-          <Button variant="primary" onClick={submitLibrarySearch}>
-            <Search className="h-4 w-4" />
-            搜索
-          </Button>
-          <div className="flex rounded-md border border-border bg-surface p-1">
-            <Button
-              className="h-7 px-2"
-              variant={mode === "and" ? "primary" : "ghost"}
-              onClick={() => {
-                setMode("and");
-                resetLibraryPage();
-              }}
-            >
-              AND
-            </Button>
-            <Button
-              className="h-7 px-2"
-              variant={mode === "or" ? "primary" : "ghost"}
-              onClick={() => {
-                setMode("or");
-                resetLibraryPage();
-              }}
-            >
-              OR
-            </Button>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">卡片</span>
-            <div className="flex rounded-md border border-border bg-surface p-1">
+          <div className={libraryFilterFieldClassName}>
+            <span className={cn(libraryFilterLabelClassName, "text-sm text-muted-foreground")}>卡片</span>
+            <div className="flex w-full rounded-md border border-border bg-surface p-1">
               {contentCardSizeOptions.map((option) => (
                 <Button
                   key={option.value}
-                  className="h-7 px-2"
+                  className="h-7 flex-1 px-2"
                   variant={cardSize === option.value ? "primary" : "ghost"}
                   onClick={() => setCardSize(option.value)}
                 >
@@ -2314,91 +2308,33 @@ function ContentLibraryPage({
               ))}
             </div>
           </div>
-          <SelectField label="排序" value={sort} options={librarySortOptions} onChange={changeSort} />
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <span className="flex h-7 items-center text-xs text-muted-foreground">常用 tag</span>
-          {commonTags.map((tag) => (
-            <button
-              key={tag.name}
-              className={cn(
-                "h-7 whitespace-nowrap rounded-full border px-3 text-xs font-medium transition-colors",
-                selectedTags.includes(tag.name)
-                  ? "border-primary/40 bg-primary-muted text-primary-text"
-                  : "border-border bg-surface-muted text-muted-foreground hover:border-border-hover",
-              )}
-              onClick={() => toggleCommonTag(tag.name)}
-            >
-              {tag.name} · {tag.count}
-            </button>
-          ))}
-        </div>
-        <div className="space-y-2">
-          <div className="flex min-h-10 flex-wrap items-center gap-2 rounded-md border border-border bg-surface px-2 py-1 focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20">
-            {selectedTags.map((tag) => (
-              <button
-                key={tag}
-                className="inline-flex h-7 items-center gap-1 rounded-full border border-primary/40 bg-primary-muted px-2 text-xs font-medium text-primary-text"
-                onClick={() => removeTag(tag)}
-                type="button"
-              >
-                {tag}
-                <X className="h-3 w-3" />
-              </button>
-            ))}
-            <input
-              className="h-7 min-w-[180px] flex-1 bg-transparent text-sm outline-none placeholder:text-subtle-foreground"
-              placeholder={selectedTags.length === 0 ? "输入 tag 名称搜索并选择" : "继续输入 tag"}
-              value={tagQuery}
-              onChange={(event) => setTagQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Backspace" && tagQuery.length === 0) {
-                  setSelectedTags((current) => current.slice(0, -1));
-                  resetLibraryPage();
-                }
-              }}
-            />
-          </div>
-          {visibleTagSuggestions.length > 0 && (
-            <div className="flex flex-wrap gap-2 rounded-md border border-border bg-surface-muted p-2">
-              {visibleTagSuggestions.map((tag) => (
-                <button
-                  key={tag.name}
-                  className="h-7 rounded-full border border-border bg-surface px-3 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary-text"
-                  onClick={() => addTag(tag.name)}
-                  type="button"
-                >
-                  {tag.name} · {tag.count}
-                </button>
-              ))}
-            </div>
-          )}
+          <SelectField className="w-full" labelClassName={libraryFilterLabelClassName} label="排序" value={sort} options={librarySortOptions} onChange={changeSort} />
         </div>
         <div className="text-xs text-subtle-foreground">当前条件匹配 {total} 条，本页展示 {contents.length} 条。</div>
       </Card>
       {selectedContentIds.length > 0 && (
-        <Card aria-label="已选内容操作" className="sticky top-[4.75rem] z-20 space-y-3 border-primary/30 bg-surface p-4 shadow-sm xl:mx-20">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
+        <Card aria-label="已选内容操作" className="sticky top-[3.75rem] z-20 space-y-3 border-primary/30 bg-surface p-3 shadow-sm sm:top-[4.75rem] sm:p-4 xl:mx-20">
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+            <div className="min-w-0">
               <div className="text-sm font-semibold">已选择 {selectedContentIds.length} 条内容</div>
               <div className="mt-1 text-xs text-muted-foreground">按选择顺序处理；批量 tag 可用逗号、空格分隔。</div>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <Button variant="secondary" onClick={() => setSelectedContentIds(contents.map((content) => content.id))}>
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
+              <Button className="w-full sm:w-auto" variant="secondary" onClick={() => setSelectedContentIds(contents.map((content) => content.id))}>
                 选择本页
               </Button>
-              <Button variant="ghost" onClick={() => setSelectedContentIds([])}>
+              <Button className="w-full sm:w-auto" variant="ghost" onClick={() => setSelectedContentIds([])}>
                 清空选择
               </Button>
-              <Button variant="secondary" onClick={() => void restoreSelectedToWorkspace()}>
+              <Button className="w-full sm:w-auto" variant="secondary" onClick={() => void restoreSelectedToWorkspace()}>
                 <FolderInput className="h-4 w-4" />
                 放回工作台
               </Button>
-              <Button variant="secondary" disabled={!canMergeSelectedContents} onClick={() => void mergeSelectedContents()}>
+              <Button className="w-full sm:w-auto" variant="secondary" disabled={!canMergeSelectedContents} onClick={() => void mergeSelectedContents()}>
                 <Combine className="h-4 w-4" />
                 {selectedContentIds.length === 1 ? "转复合" : "合并"}
               </Button>
-              <Button variant={pendingDeleteConfirm ? "danger" : "secondary"} onClick={() => void submitBatchDelete()}>
+              <Button className="w-full sm:w-auto" variant={pendingDeleteConfirm ? "danger" : "secondary"} onClick={() => void submitBatchDelete()}>
                 <Trash2 className="h-4 w-4" />
                 {pendingDeleteConfirm ? "确认删除" : "删除已选"}
               </Button>
@@ -2445,14 +2381,14 @@ function ContentLibraryPage({
           <Card
             key={content.id}
             className={cn(
-              "flex aspect-square min-h-0 flex-col overflow-hidden p-3",
+              "flex min-h-[22rem] min-w-0 flex-col overflow-hidden p-3 sm:aspect-square sm:min-h-0",
               selected && "border-primary bg-primary-muted/40",
             )}
           >
             <div className="flex shrink-0 items-start justify-between gap-3">
               <div className="min-w-0">
                 <h2 className="truncate text-sm font-semibold">{content.title ?? "未命名内容"}</h2>
-                <p className="mt-1 font-mono text-xs text-subtle-foreground">{content.sign}</p>
+                <p className="mt-1 truncate font-mono text-xs text-subtle-foreground">{content.sign}</p>
                 <p className="mt-1 text-xs text-muted-foreground">{formatDateTime(content.createdAt)}</p>
                 <p className="mt-1 inline-flex items-center gap-1 text-xs text-muted-foreground">
                   <Heart className="h-3.5 w-3.5" />
@@ -2603,34 +2539,34 @@ function PicApiPreviewPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePr
   }
 
   return (
-    <section className="space-y-4">
-      <Card className="space-y-4 p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
+    <section className="space-y-3 sm:space-y-4">
+      <Card className="space-y-4 p-3 sm:p-4">
+        <div className="flex flex-col gap-3 md:flex-row md:flex-wrap md:items-center md:justify-between">
+          <div className="min-w-0">
             <h1 className="text-base font-semibold">取图接口</h1>
             <p className="mt-1 text-xs text-muted-foreground">按当前条件调用最新或最热图片接口，点赞会写入来源和日期。</p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge>{total} 条</Badge>
-            <div className="flex rounded-md border border-border bg-surface p-1">
-              <Button className="h-8 px-3" variant={mode === "latest" ? "primary" : "ghost"} onClick={() => setMode("latest")}>
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+            <Badge className="w-fit">{total} 条</Badge>
+            <div className="flex w-full rounded-md border border-border bg-surface p-1 sm:w-auto">
+              <Button className="h-8 flex-1 px-3 sm:flex-none" variant={mode === "latest" ? "primary" : "ghost"} onClick={() => setMode("latest")}>
                 <Clock3 className="h-4 w-4" />
                 最新
               </Button>
-              <Button className="h-8 px-3" variant={mode === "hot" ? "primary" : "ghost"} onClick={() => setMode("hot")}>
+              <Button className="h-8 flex-1 px-3 sm:flex-none" variant={mode === "hot" ? "primary" : "ghost"} onClick={() => setMode("hot")}>
                 <Flame className="h-4 w-4" />
                 最热
               </Button>
             </div>
-            <div className="flex rounded-md border border-border bg-surface p-1">
-              <Button className="h-8 px-3" variant={viewMode === "display" ? "primary" : "ghost"} onClick={() => setViewMode("display")}>
+            <div className="flex w-full rounded-md border border-border bg-surface p-1 sm:w-auto">
+              <Button className="h-8 flex-1 px-3 sm:flex-none" variant={viewMode === "display" ? "primary" : "ghost"} onClick={() => setViewMode("display")}>
                 展示
               </Button>
-              <Button className="h-8 px-3" variant={viewMode === "raw" ? "primary" : "ghost"} onClick={() => setViewMode("raw")}>
+              <Button className="h-8 flex-1 px-3 sm:flex-none" variant={viewMode === "raw" ? "primary" : "ghost"} onClick={() => setViewMode("raw")}>
                 原文
               </Button>
             </div>
-            <Button className="h-9" variant="secondary" disabled={loading} onClick={() => void refreshItems()}>
+            <Button className="h-9 w-full sm:w-auto" variant="secondary" disabled={loading} onClick={() => void refreshItems()}>
               刷新
             </Button>
           </div>
@@ -2662,11 +2598,11 @@ function PicApiPreviewPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePr
             </div>
           </label>
           <SelectField label="内容类型" value={contentType} options={kindOptions} onChange={setContentType} />
-          <div className="flex rounded-md border border-border bg-surface p-1">
-            <Button className="h-8 px-3" variant={tagMode === "and" ? "primary" : "ghost"} onClick={() => setTagMode("and")}>
+          <div className="flex w-full rounded-md border border-border bg-surface p-1 sm:w-auto">
+            <Button className="h-8 flex-1 px-3 sm:flex-none" variant={tagMode === "and" ? "primary" : "ghost"} onClick={() => setTagMode("and")}>
               AND
             </Button>
-            <Button className="h-8 px-3" variant={tagMode === "or" ? "primary" : "ghost"} onClick={() => setTagMode("or")}>
+            <Button className="h-8 flex-1 px-3 sm:flex-none" variant={tagMode === "or" ? "primary" : "ghost"} onClick={() => setTagMode("or")}>
               OR
             </Button>
           </div>
@@ -2681,11 +2617,11 @@ function PicApiPreviewPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePr
         <>
           <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
             {items.map((content) => (
-              <Card key={content.id} className="flex aspect-square min-h-0 flex-col overflow-hidden p-3">
+              <Card key={content.id} className="flex min-h-[22rem] min-w-0 flex-col overflow-hidden p-3 sm:aspect-square sm:min-h-0">
                 <div className="mb-2 flex shrink-0 items-start justify-between gap-3">
                   <div className="min-w-0">
                     <h2 className="truncate text-sm font-semibold">{content.title ?? "未命名内容"}</h2>
-                    <p className="mt-1 font-mono text-xs text-subtle-foreground">{content.sign}</p>
+                    <p className="mt-1 truncate font-mono text-xs text-subtle-foreground">{content.sign}</p>
                     <p className="mt-1 text-xs text-muted-foreground">{formatDateTime(content.createdAt)}</p>
                   </div>
                   <Button
@@ -2841,15 +2777,15 @@ function AuditsPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePreviewOp
 
   return (
     <section className="space-y-4">
-      <Card className="flex flex-wrap items-center justify-between gap-3 p-4">
-        <div>
+      <Card className="flex flex-col gap-3 p-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:p-4">
+        <div className="min-w-0">
           <h1 className="text-base font-semibold">审批管理</h1>
           <p className="mt-1 text-xs text-muted-foreground">当前筛选 {total} 条，默认展示待审批内容。</p>
         </div>
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
           <SelectField label="审批状态" value={state} options={auditStateOptions} onChange={setState} />
           <SelectField label="内容类型" value={type} options={kindOptions} onChange={setType} />
-          <Button variant="secondary" onClick={() => void refreshAudits()}>
+          <Button className="w-full sm:w-auto" variant="secondary" onClick={() => void refreshAudits()}>
             刷新
           </Button>
         </div>
@@ -2879,23 +2815,23 @@ function AuditsPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePreviewOp
               {content.tags.length === 0 && <span className="text-xs text-muted-foreground">暂无 tag</span>}
             </div>
             <SourceProfileSummary profile={content.sourceProfile} />
-            <div className="flex flex-wrap justify-end gap-2">
-              <Button disabled={busyId === content.id} variant="primary" onClick={() => void runAuditAction(content.id, "approve")}>
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
+              <Button className="w-full sm:w-auto" disabled={busyId === content.id} variant="primary" onClick={() => void runAuditAction(content.id, "approve")}>
                 通过
               </Button>
-              <Button disabled={busyId === content.id} variant="secondary" onClick={() => void runAuditAction(content.id, "reject")}>
+              <Button className="w-full sm:w-auto" disabled={busyId === content.id} variant="secondary" onClick={() => void runAuditAction(content.id, "reject")}>
                 拒绝
               </Button>
-              <Button disabled={busyId === content.id} variant="secondary" onClick={() => void runAuditAction(content.id, "archive")}>
+              <Button className="w-full sm:w-auto" disabled={busyId === content.id} variant="secondary" onClick={() => void runAuditAction(content.id, "archive")}>
                 归档
               </Button>
-              <Button disabled={busyId === content.id} variant="secondary" onClick={() => void runAuditAction(content.id, "reset")}>
+              <Button className="w-full sm:w-auto" disabled={busyId === content.id} variant="secondary" onClick={() => void runAuditAction(content.id, "reset")}>
                 重置
               </Button>
-              <Button disabled={busyId === content.id} variant="secondary" onClick={() => void openAuditLog(content.id)}>
+              <Button className="w-full sm:w-auto" disabled={busyId === content.id} variant="secondary" onClick={() => void openAuditLog(content.id)}>
                 日志
               </Button>
-              <Button disabled={busyId === content.id} variant="danger" onClick={() => void runAuditAction(content.id, "delete")}>
+              <Button className="w-full sm:w-auto" disabled={busyId === content.id} variant="danger" onClick={() => void runAuditAction(content.id, "delete")}>
                 删除
               </Button>
             </div>
@@ -3302,9 +3238,9 @@ function TagManagementPage() {
 
   return (
     <section className="space-y-4">
-      <Card className="p-4 xl:mx-20">
+      <Card className="p-3 sm:p-4 xl:mx-20">
         <div className="flex flex-wrap items-center gap-3">
-          <div className="relative min-w-[260px] flex-1">
+          <div className="relative min-w-0 flex-1 basis-full sm:min-w-[260px] sm:basis-auto">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-subtle-foreground" />
             <input
               className="h-9 w-full rounded-md border border-border bg-surface pl-9 pr-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
@@ -3327,8 +3263,8 @@ function TagManagementPage() {
           />
         </div>
       </Card>
-      <Card className="flex flex-wrap items-end gap-4 p-4 xl:mx-20">
-        <div className="w-full max-w-sm">
+      <Card className="grid gap-4 p-3 sm:p-4 lg:flex lg:flex-wrap lg:items-end xl:mx-20">
+        <div className="w-full lg:max-w-sm">
           <label className="block">
             <span className="mb-1 block text-xs font-medium text-muted-foreground">新 tag</span>
             <div className="flex">
@@ -3344,7 +3280,7 @@ function TagManagementPage() {
                   if (event.key === "Enter") void submitCreateTag();
                 }}
               />
-              <Button className="h-9 rounded-l-none" disabled={!canCreateTag} variant="primary" onClick={() => void submitCreateTag()}>
+              <Button className="h-9 shrink-0 rounded-l-none" disabled={!canCreateTag} variant="primary" onClick={() => void submitCreateTag()}>
                 <Plus className="h-4 w-4" />
                 创建
               </Button>
@@ -3372,7 +3308,7 @@ function TagManagementPage() {
           maxTags={1}
           onChange={setMergeTargetTags}
         />
-        <Button className="h-9" disabled={!mergeSource || !mergeTarget || mergeSource === mergeTarget} variant="secondary" onClick={() => void submitMergeTag()}>
+        <Button className="h-9 w-full sm:w-auto" disabled={!mergeSource || !mergeTarget || mergeSource === mergeTarget} variant="secondary" onClick={() => void submitMergeTag()}>
           合并
         </Button>
       </Card>
@@ -3392,7 +3328,7 @@ function TagManagementPage() {
           <div
             key={tag.name}
             className={cn(
-              "grid gap-3 border-b border-border px-4 py-3 text-sm last:border-b-0 md:grid-cols-[minmax(120px,1fr)_minmax(160px,1.2fr)_minmax(130px,0.9fr)_80px_145px_180px] md:items-center",
+              "grid gap-2 border-b border-border px-3 py-3 text-sm last:border-b-0 sm:px-4 md:grid-cols-[minmax(120px,1fr)_minmax(160px,1.2fr)_minmax(130px,0.9fr)_80px_145px_180px] md:items-center md:gap-3",
               (pageStart + index) % 2 === 0 ? "bg-surface" : "bg-surface-muted",
             )}
           >
@@ -3430,13 +3366,19 @@ function TagManagementPage() {
                     )
               )}
             </div>
-            <span className="text-right font-medium tabular-nums">{tag.count}</span>
-            <span className="text-xs text-subtle-foreground">{tag.createdAt ? formatDateTime(tag.createdAt) : "--"}</span>
-            <div className="flex flex-wrap gap-2">
-              <Button className="h-8" variant="secondary" onClick={() => setEditingTag(tag)}>
+            <div className="flex items-center justify-between gap-3 md:block">
+              <span className="text-xs text-muted-foreground md:hidden">数量</span>
+              <span className="font-medium tabular-nums md:block md:text-right">{tag.count}</span>
+            </div>
+            <div className="flex items-center justify-between gap-3 md:block">
+              <span className="text-xs text-muted-foreground md:hidden">创建时间</span>
+              <span className="text-xs text-subtle-foreground">{tag.createdAt ? formatDateTime(tag.createdAt) : "--"}</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
+              <Button className="h-8 w-full sm:w-auto" variant="secondary" onClick={() => setEditingTag(tag)}>
                 编辑
               </Button>
-              <Button className="h-8" variant={pendingDeleteTag === tag.name ? "danger" : "secondary"} onClick={() => void removeTag(tag.name)}>
+              <Button className="h-8 w-full sm:w-auto" variant={pendingDeleteTag === tag.name ? "danger" : "secondary"} onClick={() => void removeTag(tag.name)}>
                 <Trash2 className="h-4 w-4" />
                 {pendingDeleteTag === tag.name ? "确认删除" : "删除"}
               </Button>
@@ -3469,11 +3411,11 @@ function EventsPage() {
       {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
       <Card className="overflow-hidden">
         {events.map((event) => (
-          <div key={event.id} className="grid grid-cols-[160px_120px_1fr_96px] items-center border-b border-border px-4 py-3 text-sm last:border-b-0 hover:bg-surface-muted">
-            <span className="font-medium">{event.source}</span>
+          <div key={event.id} className="grid gap-2 border-b border-border px-3 py-3 text-sm last:border-b-0 hover:bg-surface-muted sm:grid-cols-[160px_120px_1fr_96px] sm:items-center sm:gap-3 sm:px-4">
+            <span className="min-w-0 break-words font-medium">{event.source}</span>
             <span className="text-muted-foreground">{event.status}</span>
-            <span className="text-muted-foreground">{event.error ?? event.platformEventId ?? event.platform}</span>
-            <Button className="h-8" variant="secondary">
+            <span className="min-w-0 break-words text-muted-foreground">{event.error ?? event.platformEventId ?? event.platform}</span>
+            <Button className="h-8 w-full sm:w-auto" variant="secondary">
               查看
             </Button>
           </div>
@@ -3494,9 +3436,9 @@ function FileReferenceStatCards({ stats }: { stats: MediaFileReferenceStatsDto }
   ];
 
   return (
-    <div className="grid gap-3 md:grid-cols-5">
+    <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
       {items.map((item) => (
-        <Card key={item.label} className="p-4">
+        <Card key={item.label} className="p-3 sm:p-4">
           <div className="text-xs text-muted-foreground">{item.label}</div>
           <div className="mt-2 text-2xl font-semibold tabular-nums">{item.value}</div>
         </Card>
@@ -3517,7 +3459,7 @@ function FileReferencePreview({ file, onOpen }: { file: MediaFileReferenceItemDt
   if (previewType === "image") {
     return (
       <button
-        className="block h-16 w-20 overflow-hidden rounded-md border border-border bg-surface-muted outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary"
+        className="block h-16 w-20 shrink-0 overflow-hidden rounded-md border border-border bg-surface-muted outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary"
         type="button"
         onClick={() => onOpen(file)}
         aria-label="预览图片文件"
@@ -3530,7 +3472,7 @@ function FileReferencePreview({ file, onOpen }: { file: MediaFileReferenceItemDt
   if (previewType === "video") {
     return (
       <button
-        className="relative h-16 w-28 overflow-hidden rounded-md border border-border bg-black text-white outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary"
+        className="relative h-16 w-28 shrink-0 overflow-hidden rounded-md border border-border bg-black text-white outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary"
         type="button"
         onClick={() => onOpen(file)}
         aria-label="预览视频文件"
@@ -3544,7 +3486,7 @@ function FileReferencePreview({ file, onOpen }: { file: MediaFileReferenceItemDt
   if (previewType === "audio") {
     return (
       <button
-        className="flex h-16 w-44 items-center gap-2 rounded-md border border-border bg-surface-muted px-3 text-left outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary"
+        className="flex h-16 w-28 shrink-0 items-center gap-2 rounded-md border border-border bg-surface-muted px-3 text-left outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary sm:w-44"
         type="button"
         onClick={() => onOpen(file)}
         aria-label="预览音频文件"
@@ -3557,7 +3499,7 @@ function FileReferencePreview({ file, onOpen }: { file: MediaFileReferenceItemDt
 
   return (
     <button
-      className="flex h-16 w-20 items-center justify-center rounded-md border border-border bg-surface-muted outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary"
+      className="flex h-16 w-20 shrink-0 items-center justify-center rounded-md border border-border bg-surface-muted outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary"
       type="button"
       onClick={() => onOpen(file)}
       aria-label="预览普通文件"
@@ -3587,7 +3529,7 @@ function FileReferenceRow({
   return (
     <div
       className={cn(
-        "grid gap-3 border-b border-border px-4 py-3 text-sm last:border-b-0 xl:grid-cols-[32px_minmax(300px,1fr)_90px_110px_150px_minmax(280px,1.2fr)] xl:items-center",
+        "grid gap-3 border-b border-border px-3 py-3 text-sm last:border-b-0 sm:px-4 xl:grid-cols-[32px_minmax(300px,1fr)_90px_110px_150px_minmax(280px,1.2fr)] xl:items-center",
         selected && "bg-primary-muted/30",
       )}
     >
@@ -3605,8 +3547,14 @@ function FileReferenceRow({
           <div className="mt-1 truncate text-xs text-subtle-foreground">{file.storageKey}</div>
         </div>
       </div>
-      <Badge className="w-fit">{file.format ?? "bin"}</Badge>
-      <span className="tabular-nums text-muted-foreground">{formatBytes(file.sizeBytes)}</span>
+      <div className="flex items-center justify-between gap-3 xl:block">
+        <span className="text-xs text-muted-foreground xl:hidden">格式</span>
+        <Badge className="w-fit">{file.format ?? "bin"}</Badge>
+      </div>
+      <div className="flex items-center justify-between gap-3 xl:block">
+        <span className="text-xs text-muted-foreground xl:hidden">大小</span>
+        <span className="tabular-nums text-muted-foreground">{formatBytes(file.sizeBytes)}</span>
+      </div>
       <div className={cn("text-sm tabular-nums", file.ownerCount === 0 ? "text-amber-600 dark:text-amber-400" : "text-foreground")}>
         <div>{file.ownerCount} 个对象</div>
         <div className="text-xs text-subtle-foreground">{file.referenceCount} 条路径</div>
@@ -3776,9 +3724,9 @@ function FileReferencesPage({ onOpenImagePreview }: { onOpenImagePreview: ImageP
 
   return (
     <section className="space-y-4">
-      <Card className="p-4">
+      <Card className="p-3 sm:p-4">
         <div className="flex flex-wrap items-center gap-3">
-          <form className="relative min-w-[260px] flex-1" onSubmit={submitSearch}>
+          <form className="relative min-w-0 flex-1 basis-full sm:min-w-[260px] sm:basis-auto" onSubmit={submitSearch}>
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-subtle-foreground" />
             <input
               className="h-9 w-full rounded-md border border-border bg-surface pl-9 pr-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
@@ -3788,7 +3736,7 @@ function FileReferencesPage({ onOpenImagePreview }: { onOpenImagePreview: ImageP
             />
           </form>
           <SelectField label="范围" value={mode} options={fileReferenceModeOptions} onChange={changeMode} />
-          <Button variant="secondary" onClick={() => void refreshReferences()} disabled={loading}>
+          <Button className="w-full sm:w-auto" variant="secondary" onClick={() => void refreshReferences()} disabled={loading}>
             <RefreshCw className="h-4 w-4" />
             {loading ? "刷新中" : "刷新"}
           </Button>
@@ -3797,13 +3745,15 @@ function FileReferencesPage({ onOpenImagePreview }: { onOpenImagePreview: ImageP
       {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
       <FileReferenceStatCards stats={stats} />
       {mode === "unreferenced" && (
-        <Card className="flex flex-wrap items-center justify-between gap-3 p-4">
-          <div className="flex items-center gap-3 text-sm">
+        <Card className="flex flex-col gap-3 p-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:p-4">
+          <div className="flex items-start gap-3 text-sm sm:items-center">
             <input className="h-4 w-4 accent-[var(--primary)]" type="checkbox" checked={allCurrentSelected} disabled={selectableFiles.length === 0} aria-label="选择当前页无引用文件" onChange={toggleCurrentPage} />
-            <span className="font-medium">已选择 {selectedMd5s.length} 个无引用文件</span>
-            <span className="text-muted-foreground">删除会同时移除数据库文件记录和 objects 下的文件。</span>
+            <span className="min-w-0">
+              <span className="block font-medium">已选择 {selectedMd5s.length} 个无引用文件</span>
+              <span className="block text-muted-foreground">删除会同时移除数据库文件记录和 objects 下的文件。</span>
+            </span>
           </div>
-          <Button variant={pendingDeleteConfirm ? "danger" : "secondary"} disabled={selectedMd5s.length === 0 || deleting} onClick={() => void deleteSelectedFiles()}>
+          <Button className="w-full sm:w-auto" variant={pendingDeleteConfirm ? "danger" : "secondary"} disabled={selectedMd5s.length === 0 || deleting} onClick={() => void deleteSelectedFiles()}>
             <Trash2 className="h-4 w-4" />
             {deleting ? "删除中" : pendingDeleteConfirm ? "再次确认删除" : "删除已选"}
           </Button>
@@ -3869,11 +3819,11 @@ function DataExportProgress({ item }: { item: DataExportListItemDto }) {
   const percent = item.progressPercent ?? (item.status === "ready" ? 100 : 0);
   const showBar = item.status === "running" || item.status === "ready";
   return (
-    <div className="min-w-0 space-y-1 text-right">
+    <div className="min-w-0 space-y-1 sm:text-right">
       <div className="tabular-nums text-muted-foreground">{formatBytes(writtenBytes)}</div>
       {item.status === "running" && <div className="text-[11px] text-subtle-foreground">zip.tmp</div>}
       {showBar && (
-        <div className="ml-auto flex w-32 items-center justify-end gap-2">
+        <div className="flex w-32 items-center gap-2 sm:ml-auto sm:justify-end">
           <div className="h-1.5 w-20 overflow-hidden rounded-full bg-surface-muted">
             <div className="h-full rounded-full bg-primary" style={{ width: `${Math.max(0, Math.min(100, percent))}%` }} />
           </div>
@@ -3887,10 +3837,10 @@ function DataExportProgress({ item }: { item: DataExportListItemDto }) {
 function ImportResultPanel({ result }: { result: DataImportResultDto }) {
   const tableEntries = Object.entries(result.tables).filter(([, value]) => value.created || value.updated || value.skipped || value.conflicted);
   return (
-    <Card className="p-4">
-      <div className="mb-3 flex items-center justify-between gap-3">
+    <Card className="p-3 sm:p-4">
+      <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-base font-semibold">导入结果</h2>
-        <Badge>{result.conflictPolicy === "overwrite" ? "覆盖冲突" : "保留本地"}</Badge>
+        <Badge className="w-fit">{result.conflictPolicy === "overwrite" ? "覆盖冲突" : "保留本地"}</Badge>
       </div>
       <div className="grid gap-3 md:grid-cols-4">
         <div className="rounded-md border border-border bg-surface-muted p-3 text-sm">
@@ -3912,12 +3862,12 @@ function ImportResultPanel({ result }: { result: DataImportResultDto }) {
       </div>
       <div className="mt-4 overflow-hidden rounded-md border border-border">
         {tableEntries.map(([table, value]) => (
-          <div key={table} className="grid grid-cols-[1fr_repeat(4,72px)] items-center border-b border-border px-3 py-2 text-sm last:border-b-0">
-            <span className="font-mono text-xs">{table}</span>
-            <span className="text-right tabular-nums text-green-600 dark:text-green-400">{value.created}</span>
-            <span className="text-right tabular-nums text-blue-600 dark:text-blue-400">{value.updated}</span>
-            <span className="text-right tabular-nums text-muted-foreground">{value.skipped}</span>
-            <span className="text-right tabular-nums text-red-600 dark:text-red-400">{value.conflicted}</span>
+          <div key={table} className="grid gap-2 border-b border-border px-3 py-2 text-sm last:border-b-0 sm:grid-cols-[1fr_repeat(4,72px)] sm:items-center">
+            <span className="min-w-0 break-words font-mono text-xs">{table}</span>
+            <span className="flex items-center justify-between gap-3 tabular-nums text-green-600 dark:text-green-400 sm:block sm:text-right"><span className="text-xs text-muted-foreground sm:hidden">新增</span>{value.created}</span>
+            <span className="flex items-center justify-between gap-3 tabular-nums text-blue-600 dark:text-blue-400 sm:block sm:text-right"><span className="text-xs text-muted-foreground sm:hidden">更新</span>{value.updated}</span>
+            <span className="flex items-center justify-between gap-3 tabular-nums text-muted-foreground sm:block sm:text-right"><span className="text-xs text-muted-foreground sm:hidden">跳过</span>{value.skipped}</span>
+            <span className="flex items-center justify-between gap-3 tabular-nums text-red-600 dark:text-red-400 sm:block sm:text-right"><span className="text-xs text-muted-foreground sm:hidden">冲突</span>{value.conflicted}</span>
           </div>
         ))}
         {tableEntries.length === 0 && <div className="p-4 text-sm text-muted-foreground">没有数据库记录变化。</div>}
@@ -4079,13 +4029,13 @@ function DataExportsPage() {
   return (
     <section className="space-y-4">
       {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button onClick={() => void createExport()} disabled={!!busy}>
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
+          <Button className="w-full sm:w-auto" onClick={() => void createExport()} disabled={!!busy}>
             <FileArchive className="h-4 w-4" />
             {busy === "create" ? "导出中" : "新建导出"}
           </Button>
-          <Button variant="secondary" onClick={() => fileInputRef.current?.click()} disabled={!!busy}>
+          <Button className="w-full sm:w-auto" variant="secondary" onClick={() => fileInputRef.current?.click()} disabled={!!busy}>
             <Upload className="h-4 w-4" />
             {busy === "upload" ? "上传中" : "上传 zip"}
           </Button>
@@ -4094,7 +4044,7 @@ function DataExportsPage() {
           </Button>
           <input ref={fileInputRef} className="hidden" type="file" accept=".zip,application/zip" onChange={(event) => void uploadExport(event.target.files?.[0])} />
         </div>
-        <Badge>{items.length} 个</Badge>
+        <Badge className="w-fit">{items.length} 个</Badge>
       </div>
       <Card className="overflow-hidden">
         <div className="hidden grid-cols-[1.3fr_88px_84px_84px_132px_84px_148px_300px] items-center border-b border-border bg-surface-muted px-4 py-2 text-xs text-muted-foreground xl:grid">
@@ -4113,7 +4063,7 @@ function DataExportsPage() {
             <div
               key={item.id}
               className={cn(
-                "grid gap-3 border-b border-border px-4 py-3 text-sm last:border-b-0 xl:grid-cols-[1.3fr_88px_84px_84px_132px_84px_148px_300px] xl:items-center",
+                "grid gap-2 border-b border-border px-3 py-3 text-sm last:border-b-0 sm:px-4 xl:grid-cols-[1.3fr_88px_84px_84px_132px_84px_148px_300px] xl:items-center xl:gap-3",
                 selected?.id === item.id ? "bg-primary-muted/50" : "bg-surface hover:bg-surface-muted",
               )}
             >
@@ -4139,38 +4089,53 @@ function DataExportsPage() {
                   </>
                 )}
               </div>
-              <DataExportStatusBadge status={item.status} />
-              <span className="text-right tabular-nums text-muted-foreground">{item.databaseRows}</span>
-              <span className="text-right tabular-nums text-muted-foreground">{item.objectCount}</span>
-              <DataExportProgress item={item} />
-              <span className="text-right tabular-nums text-muted-foreground">{formatDuration(item.durationSeconds)}</span>
+              <div className="flex items-center justify-between gap-3 xl:block">
+                <span className="text-xs text-muted-foreground xl:hidden">状态</span>
+                <DataExportStatusBadge status={item.status} />
+              </div>
+              <div className="flex items-center justify-between gap-3 xl:block">
+                <span className="text-xs text-muted-foreground xl:hidden">数据库</span>
+                <span className="tabular-nums text-muted-foreground xl:block xl:text-right">{item.databaseRows}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3 xl:block">
+                <span className="text-xs text-muted-foreground xl:hidden">文件</span>
+                <span className="tabular-nums text-muted-foreground xl:block xl:text-right">{item.objectCount}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3 xl:block">
+                <span className="text-xs text-muted-foreground xl:hidden">进度</span>
+                <DataExportProgress item={item} />
+              </div>
+              <div className="flex items-center justify-between gap-3 xl:block">
+                <span className="text-xs text-muted-foreground xl:hidden">耗时</span>
+                <span className="tabular-nums text-muted-foreground xl:block xl:text-right">{formatDuration(item.durationSeconds)}</span>
+              </div>
               <span className="text-xs text-subtle-foreground">{formatDateTime(item.createdAt)}</span>
-              <div className="flex flex-wrap justify-end gap-2">
+              <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
                 {editing ? (
                   <>
-                    <Button className="h-8" variant="secondary" onClick={() => void saveExport(item)} disabled={busy === `save:${item.id}`}>
+                    <Button className="h-8 w-full sm:w-auto" variant="secondary" onClick={() => void saveExport(item)} disabled={busy === `save:${item.id}`}>
                       <Save className="h-4 w-4" />
                       保存
                     </Button>
-                    <Button className="h-8" variant="ghost" onClick={() => setEditingId("")}>
+                    <Button className="h-8 w-full sm:w-auto" variant="ghost" onClick={() => setEditingId("")}>
                       <X className="h-4 w-4" />
                     </Button>
                   </>
                 ) : (
                   <>
-                    <Button className="h-8" variant="secondary" onClick={() => void showDetail(item)} disabled={busy === `detail:${item.id}`}>
+                    <Button className="h-8 w-full sm:w-auto" variant="secondary" onClick={() => void showDetail(item)} disabled={busy === `detail:${item.id}`}>
                       查看
                     </Button>
-                    <Button className="h-8" variant="secondary" onClick={() => startEditing(item)}>
+                    <Button className="h-8 w-full sm:w-auto" variant="secondary" onClick={() => startEditing(item)}>
                       <Pencil className="h-4 w-4" />
                     </Button>
-                    <Button className="h-8" variant="secondary" onClick={() => void downloadExport(item)} disabled={item.status !== "ready" || busy === `download:${item.id}`}>
+                    <Button className="h-8 w-full sm:w-auto" variant="secondary" onClick={() => void downloadExport(item)} disabled={item.status !== "ready" || busy === `download:${item.id}`}>
                       <Download className="h-4 w-4" />
                     </Button>
-                    <Button className="h-8" variant="secondary" onClick={() => void applyImport(item)} disabled={item.status !== "ready" || busy === `import:${item.id}`}>
+                    <Button className="h-8 w-full sm:w-auto" variant="secondary" onClick={() => void applyImport(item)} disabled={item.status !== "ready" || busy === `import:${item.id}`}>
                       应用导入
                     </Button>
-                    <Button className="h-8" variant={pendingDeleteId === item.id ? "danger" : "secondary"} onClick={() => void removeExport(item)} disabled={busy === `delete:${item.id}`}>
+                    <Button className="h-8 w-full sm:w-auto" variant={pendingDeleteId === item.id ? "danger" : "secondary"} onClick={() => void removeExport(item)} disabled={busy === `delete:${item.id}`}>
                       <Trash2 className="h-4 w-4" />
                       {pendingDeleteId === item.id ? "确认" : "删除"}
                     </Button>
@@ -4183,7 +4148,7 @@ function DataExportsPage() {
         {items.length === 0 && <div className="p-8 text-center text-sm text-muted-foreground">暂无导出记录。</div>}
       </Card>
       {selected && (
-        <Card className="p-4">
+        <Card className="p-3 sm:p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-base font-semibold">{selected.name}</h2>
@@ -4211,8 +4176,8 @@ function DataExportsPage() {
           {"manifest" in selected && selected.manifest && (
             <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
               {selected.manifest.tables.map((table) => (
-                <div key={table.table} className="flex items-center justify-between rounded-md border border-border bg-surface-muted px-3 py-2 text-sm">
-                  <span className="font-mono text-xs">{table.table}</span>
+                <div key={table.table} className="flex items-center justify-between gap-3 rounded-md border border-border bg-surface-muted px-3 py-2 text-sm">
+                  <span className="min-w-0 break-words font-mono text-xs">{table.table}</span>
                   <span className="tabular-nums text-muted-foreground">{table.rows}</span>
                 </div>
               ))}
@@ -4228,27 +4193,27 @@ function DataExportsPage() {
 function DashboardPreview({ contents, events }: { contents: MediaContentDto[]; events: IngestEventDto[] }) {
   return (
     <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
-      <Card className="p-4">
+      <Card className="p-3 sm:p-4">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-base font-semibold">内容库概览</h2>
           <Badge>{contents.length} 条</Badge>
         </div>
         <div className="overflow-hidden rounded-md border border-border">
           {contents.slice(0, 3).map((content) => (
-            <div key={content.id} className="grid grid-cols-[1fr_72px_72px_92px_72px] items-center border-b border-border bg-surface px-3 py-2 text-sm last:border-b-0 hover:bg-surface-muted">
-              <span className="font-medium">{content.title ?? "未命名内容"}</span>
+            <div key={content.id} className="grid gap-2 border-b border-border bg-surface px-3 py-2 text-sm last:border-b-0 hover:bg-surface-muted sm:grid-cols-[1fr_72px_72px_92px_72px] sm:items-center">
+              <span className="min-w-0 truncate font-medium">{content.title ?? "未命名内容"}</span>
               <span className="text-muted-foreground">{content.type}</span>
               <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                 <Heart className="h-3.5 w-3.5" />
                 {content.likeCount}
               </span>
               <span className={cn("text-xs", content.auditState === "approved" ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400")}>{content.auditState}</span>
-              <span className="text-right text-xs text-subtle-foreground">{content.tags.length} tags</span>
+              <span className="text-xs text-subtle-foreground sm:text-right">{content.tags.length} tags</span>
             </div>
           ))}
         </div>
       </Card>
-      <Card className="p-4">
+      <Card className="p-3 sm:p-4">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-base font-semibold">接入事件</h2>
           <Badge>{events.length} 条</Badge>
@@ -4284,9 +4249,9 @@ function HomePage({
 }) {
   return (
     <section className="space-y-4">
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-4">
         {stats.map(({ label, value, icon: Icon }) => (
-          <Card key={label} className="p-4">
+          <Card key={label} className="p-3 sm:p-4">
             <div className="flex items-center justify-between">
               <span className="text-sm text-muted-foreground">{label}</span>
               <Icon className="h-4 w-4 text-primary" />
@@ -4695,9 +4660,9 @@ export default function App() {
   return (
     <div className="h-full bg-background text-foreground">
       <Sidebar page={page} onPageChange={changePage} />
-      <TopBar page={page} theme={theme} onThemeChange={changeTheme} onLogout={handleLogout} />
+      <TopBar page={page} theme={theme} onPageChange={changePage} onThemeChange={changeTheme} onLogout={handleLogout} />
       <div className="fixed inset-x-0 bottom-0 top-14 overflow-y-auto lg:left-60" data-app-scroll-container>
-        <main className="flex min-h-full flex-col gap-4 px-4 py-4 lg:px-6 lg:pb-6">
+        <main className="flex min-h-full flex-col gap-3 px-3 py-3 sm:gap-4 sm:px-4 sm:py-4 lg:px-6 lg:pb-6">
           {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
           {page === "home" && <HomePage stats={stats} contents={contents} events={events} />}
           {page === "workspace" && (

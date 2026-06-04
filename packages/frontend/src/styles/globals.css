@@ -43,6 +43,11 @@ body,
   height: 100%;
 }
 
+html {
+  overflow: hidden;
+  -webkit-text-size-adjust: 100%;
+}
+
 body {
   margin: 0;
   min-width: 320px;
@@ -65,10 +70,20 @@ button,
 input,
 textarea,
 select {
+  max-width: 100%;
   font: inherit;
 }
 
+img,
+video,
+canvas,
+svg {
+  max-width: 100%;
+}
+
 [data-app-scroll-container] {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   scrollbar-color: var(--border-hover) transparent;
   scrollbar-width: thin;
 }
@@ -95,4 +110,10 @@ select {
 
 .react-viewer-image-transition {
   transition-duration: 80ms !important;
+}
+
+@supports (min-height: 100dvh) {
+  body {
+    min-height: 100dvh;
+  }
 }

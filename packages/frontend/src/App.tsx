@@ -19,10 +19,11 @@ import type {
   SourceProfileDto,
   TagDto,
   TagVisibility,
+  TagVisibilityFilter,
   WorkspaceDraftDto,
 } from "@pic/shared";
 import type { LucideIcon } from "lucide-react";
-import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactNode, type UIEvent } from "react";
 import { createPortal } from "react-dom";
 import {
   Archive,
@@ -124,9 +125,11 @@ type LibrarySort = "time_desc" | "time_asc" | "like_desc" | "like_asc";
 type PicPreviewMode = "latest" | "hot";
 type PicViewMode = "display" | "raw";
 type LibraryPaginationPlacement = "top" | "side" | "bottom";
+type TagSearchHandler = (tag: string) => void;
 type TagRouteState = {
   query: string;
   sort: TagSort;
+  visibility: TagVisibilityFilter;
   page: number;
   size: number;
 };
@@ -215,6 +218,11 @@ const tagVisibilityOptions: Array<{ label: string; value: TagVisibility }> = [
   { label: "公开", value: "public" },
 ];
 
+const tagVisibilityFilterOptions: Array<{ label: string; value: TagVisibilityFilter }> = [
+  { label: "全部可见性", value: "all" },
+  ...tagVisibilityOptions,
+];
+
 const fileReferenceModeOptions: Array<{ label: string; value: MediaFileReferenceMode }> = [
   { label: "多次引用", value: "multiple" },
   { label: "无引用", value: "unreferenced" },
@@ -225,8 +233,12 @@ const defaultLibraryPage = 1;
 const defaultLibraryPageSize = 100;
 const defaultLibrarySort: LibrarySort = "time_desc";
 const defaultTagSort: TagSort = "count_desc";
+const defaultTagVisibility: TagVisibilityFilter = "all";
 const defaultTagPage = 1;
 const defaultTagPageSize = 100;
+const tagPreviewPageSize = 30;
+const tagPreviewRowHeight = 364;
+const tagPreviewOverscan = 3;
 const libraryPageSizeOptions = [50, 100, 200];
 const libraryFilterLabelClassName = "w-7 shrink-0 text-right";
 const libraryFilterFieldClassName = "grid grid-cols-[1.75rem_minmax(0,1fr)] items-center gap-2";
@@ -242,6 +254,8 @@ const pagePaths: Record<PageKey, string> = {
   references: "/references",
   exports: "/exports",
 };
+
+const appRouteChangeEvent = "pic-content-system:route-change";
 
 const defaultMediaFilters: MediaFilters = {
   query: "",
@@ -363,6 +377,10 @@ function isLibrarySort(value: string | null): value is LibrarySort {
   return librarySortOptions.some((option) => option.value === value);
 }
 
+function isTagVisibilityFilter(value: string | null): value is TagVisibilityFilter {
+  return tagVisibilityFilterOptions.some((option) => option.value === value);
+}
+
 function isMediaAssetStatusFilter(value: string | null): value is MediaAssetStatus | "all" {
   return statusOptions.some((option) => option.value === value);
 }
@@ -422,6 +440,19 @@ function currentRouteUrl() {
   return `${window.location.pathname}${window.location.search}${window.location.hash}`;
 }
 
+function emitAppRouteChange() {
+  window.dispatchEvent(new Event(appRouteChangeEvent));
+}
+
+function addRouteStateChangeListener(listener: () => void) {
+  window.addEventListener("popstate", listener);
+  window.addEventListener(appRouteChangeEvent, listener);
+  return () => {
+    window.removeEventListener("popstate", listener);
+    window.removeEventListener(appRouteChangeEvent, listener);
+  };
+}
+
 function readWorkspaceFiltersFromUrl(): MediaFilters {
   const params = new URLSearchParams(window.location.search);
   const status = params.get("status");
@@ -470,9 +501,11 @@ function updateLibraryQuery(state: LibraryRouteState) {
 function readTagStateFromUrl(): TagRouteState {
   const params = new URLSearchParams(window.location.search);
   const sort = params.get("sort");
+  const visibility = params.get("visibility");
   return {
     query: params.get("q") ?? "",
     sort: tagSortOptions.some((option) => option.value === sort) ? (sort as TagSort) : defaultTagSort,
+    visibility: isTagVisibilityFilter(visibility) ? visibility : defaultTagVisibility,
     page: numberFromParam(params.get("page"), defaultTagPage),
     size: tagPageSizeFromParam(params.get("size")),
   };
@@ -482,6 +515,7 @@ function updateTagSearchQuery(state: TagRouteState) {
   replaceRouteQuery(pagePaths.tags, {
     q: state.query.trim() || undefined,
     sort: state.sort === defaultTagSort ? undefined : state.sort,
+    visibility: state.visibility === defaultTagVisibility ? undefined : state.visibility,
     page: state.page === defaultTagPage ? undefined : String(state.page),
     size: state.size === defaultTagPageSize ? undefined : String(state.size),
   });
@@ -728,6 +762,23 @@ function SelectField<T extends string>({
         ))}
       </select>
     </label>
+  );
+}
+
+function TagSearchBadge({ tag, onSearch }: { tag: string; onSearch: TagSearchHandler }) {
+  return (
+    <button
+      type="button"
+      className="inline-flex h-6 max-w-full items-center rounded-full border border-primary/30 bg-primary-muted px-2 text-xs font-medium text-primary-text transition-colors hover:border-primary/50 hover:bg-primary-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+      title={`搜索 tag：${tag}`}
+      aria-label={`在标签管理中搜索 ${tag}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        onSearch(tag);
+      }}
+    >
+      <span className="truncate">{tag}</span>
+    </button>
   );
 }
 
@@ -1318,6 +1369,93 @@ function ContentPreview({
   return <CompositeContentPreview elements={content.elements} onOpen={onOpenContent ? () => onOpenContent(content) : undefined} onOpenImage={onOpenElement} />;
 }
 
+function ContentLibraryCard({
+  content,
+  selectedOrder = 0,
+  busyLikeId,
+  layout = "grid",
+  className,
+  style,
+  onLike,
+  onToggleSelection,
+  onOpenContent,
+  onOpenElement,
+  onTagSearch,
+}: {
+  content: MediaContentDto;
+  selectedOrder?: number;
+  busyLikeId?: string;
+  layout?: "grid" | "virtual";
+  className?: string;
+  style?: CSSProperties;
+  onLike?: (contentId: string) => void;
+  onToggleSelection?: (contentId: string) => void;
+  onOpenContent: (content: MediaContentDto) => void;
+  onOpenElement: (element: MediaElement) => void;
+  onTagSearch: TagSearchHandler;
+}) {
+  const selected = selectedOrder > 0;
+  return (
+    <Card
+      data-content-card-id={content.id}
+      style={style}
+      className={cn(
+        "flex min-w-0 flex-col overflow-hidden p-3",
+        layout === "grid" ? "min-h-[22rem] sm:aspect-square sm:min-h-0" : "h-[22rem]",
+        selected && "border-primary bg-primary-muted/40",
+        className,
+      )}
+    >
+      <div className="flex shrink-0 items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="truncate text-sm font-semibold">{content.title ?? "未命名内容"}</h2>
+          <p className="mt-1 truncate font-mono text-xs text-subtle-foreground">{content.sign}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{formatDateTime(content.createdAt)}</p>
+          <p className="mt-1 inline-flex items-center gap-1 text-xs text-muted-foreground">
+            <Heart className="h-3.5 w-3.5" />
+            点赞 {content.likeCount}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {onLike && (
+            <button
+              className="flex h-7 min-w-10 items-center justify-center gap-1 rounded-md border border-border bg-surface px-2 text-xs font-semibold text-subtle-foreground transition-colors hover:border-primary/40 hover:text-primary-text disabled:opacity-60"
+              disabled={busyLikeId === content.id}
+              onClick={() => onLike(content.id)}
+              type="button"
+              aria-label="点赞内容"
+            >
+              <Heart className="h-4 w-4" />
+              {content.likeCount}
+            </button>
+          )}
+          {onToggleSelection && (
+            <button
+              className={cn(
+                "flex h-7 min-w-7 items-center justify-center rounded-md border border-border bg-surface px-1 text-xs font-semibold text-subtle-foreground transition-colors hover:border-primary/40 hover:text-primary-text",
+                selected && "border-primary/40 bg-primary text-[#062426]",
+              )}
+              onClick={() => onToggleSelection(content.id)}
+              type="button"
+              aria-label={selected ? `取消选择第 ${selectedOrder} 个内容` : "选择内容"}
+            >
+              {selected ? selectedOrder : <CheckCircle2 className="h-4 w-4" />}
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="mt-2 flex max-h-14 shrink-0 flex-wrap gap-1 overflow-hidden">
+        {content.tags.map((tag) => (
+          <TagSearchBadge key={tag} tag={tag} onSearch={onTagSearch} />
+        ))}
+      </div>
+      <div className="mt-2 min-h-0 flex-1">
+        <ContentPreview content={content} onOpenContent={onOpenContent} onOpenElement={onOpenElement} />
+      </div>
+    </Card>
+  );
+}
+
 function Modal({
   title,
   subtitle,
@@ -1336,8 +1474,14 @@ function Modal({
   onClose: () => void;
 }) {
   useAppBackLayer(true, onClose);
+  function handleBackdropClick(event: MouseEvent<HTMLDivElement>) {
+    // 嵌套 Portal 弹窗的点击事件仍会沿 React 树冒泡，这里只关闭当前层。
+    event.stopPropagation();
+    onClose();
+  }
+
   return createPortal(
-    <div className={cn("fixed inset-0 flex items-center justify-center bg-black/70 p-2 sm:p-4", zIndex)} role="dialog" aria-modal="true" onClick={onClose}>
+    <div className={cn("fixed inset-0 flex items-center justify-center bg-black/70 p-2 sm:p-4", zIndex)} role="dialog" aria-modal="true" onClick={handleBackdropClick}>
       <div className={cn("flex max-h-[92vh] w-full flex-col overflow-hidden rounded-md border border-border bg-surface shadow-xl", maxWidth)} onClick={(event) => event.stopPropagation()}>
         <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
           <div className="min-w-0">
@@ -1574,10 +1718,12 @@ function ContentDetailModal({
   content,
   onClose,
   onOpenElement,
+  onTagSearch,
 }: {
   content: MediaContentDto;
   onClose: () => void;
   onOpenElement: (element: MediaElement) => void;
+  onTagSearch: TagSearchHandler;
 }) {
   return (
     <Modal title={content.title ?? "复合内容"} subtitle={content.sign} closeLabel="关闭详情" zIndex="z-40" onClose={onClose}>
@@ -1588,9 +1734,7 @@ function ContentDetailModal({
           </div>
           <div className="mb-4 flex flex-wrap gap-1">
             {content.tags.map((tag) => (
-              <Badge key={tag} className="border-primary/30 bg-primary-muted text-primary-text">
-                {tag}
-              </Badge>
+              <TagSearchBadge key={tag} tag={tag} onSearch={onTagSearch} />
             ))}
           </div>
           <div className="grid gap-3 md:grid-cols-2">
@@ -2004,9 +2148,11 @@ function WorkspacePage({
 function ContentLibraryPage({
   onOpenImagePreview,
   onOpenWorkspace,
+  onTagSearch,
 }: {
   onOpenImagePreview: ImagePreviewOpener;
   onOpenWorkspace: () => void;
+  onTagSearch: TagSearchHandler;
 }) {
   const initialRouteState = readLibraryStateFromUrl();
   const [selectedTags, setSelectedTags] = useState<string[]>(initialRouteState.selectedTags);
@@ -2397,61 +2543,18 @@ function ContentLibraryPage({
       <div className="grid gap-3 xl:px-20" style={gridStyle}>
         {contents.map((content) => {
           const selectedOrder = selectedContentIds.indexOf(content.id) + 1;
-          const selected = selectedOrder > 0;
           return (
-          <Card
-            key={content.id}
-            data-content-card-id={content.id}
-            className={cn(
-              "flex min-h-[22rem] min-w-0 flex-col overflow-hidden p-3 sm:aspect-square sm:min-h-0",
-              selected && "border-primary bg-primary-muted/40",
-            )}
-          >
-            <div className="flex shrink-0 items-start justify-between gap-3">
-              <div className="min-w-0">
-                <h2 className="truncate text-sm font-semibold">{content.title ?? "未命名内容"}</h2>
-                <p className="mt-1 truncate font-mono text-xs text-subtle-foreground">{content.sign}</p>
-                <p className="mt-1 text-xs text-muted-foreground">{formatDateTime(content.createdAt)}</p>
-                <p className="mt-1 inline-flex items-center gap-1 text-xs text-muted-foreground">
-                  <Heart className="h-3.5 w-3.5" />
-                  点赞 {content.likeCount}
-                </p>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                <button
-                  className="flex h-7 min-w-10 items-center justify-center gap-1 rounded-md border border-border bg-surface px-2 text-xs font-semibold text-subtle-foreground transition-colors hover:border-primary/40 hover:text-primary-text disabled:opacity-60"
-                  disabled={busyLikeId === content.id}
-                  onClick={() => void submitLike(content.id)}
-                  type="button"
-                  aria-label="点赞内容"
-                >
-                  <Heart className="h-4 w-4" />
-                  {content.likeCount}
-                </button>
-                <button
-                  className={cn(
-                    "flex h-7 min-w-7 items-center justify-center rounded-md border border-border bg-surface px-1 text-xs font-semibold text-subtle-foreground transition-colors hover:border-primary/40 hover:text-primary-text",
-                    selected && "border-primary/40 bg-primary text-[#062426]",
-                  )}
-                  onClick={() => toggleContentSelection(content.id)}
-                  type="button"
-                  aria-label={selected ? `取消选择第 ${selectedOrder} 个内容` : "选择内容"}
-                >
-                  {selected ? selectedOrder : <CheckCircle2 className="h-4 w-4" />}
-                </button>
-              </div>
-            </div>
-            <div className="mt-2 flex max-h-14 shrink-0 flex-wrap gap-1 overflow-hidden">
-              {content.tags.map((tag) => (
-                <Badge key={tag} className="border-primary/30 bg-primary-muted text-primary-text">
-                  {tag}
-                </Badge>
-              ))}
-            </div>
-            <div className="mt-2 min-h-0 flex-1">
-              <ContentPreview content={content} onOpenContent={setPreviewContent} onOpenElement={(element) => openElementPreview(element, content.elements)} />
-            </div>
-          </Card>
+            <ContentLibraryCard
+              key={content.id}
+              content={content}
+              selectedOrder={selectedOrder}
+              busyLikeId={busyLikeId}
+              onLike={(contentId) => void submitLike(contentId)}
+              onToggleSelection={toggleContentSelection}
+              onOpenContent={setPreviewContent}
+              onOpenElement={(element) => openElementPreview(element, content.elements)}
+              onTagSearch={onTagSearch}
+            />
           );
         })}
       </div>
@@ -2462,7 +2565,17 @@ function ContentLibraryPage({
           <ChevronUp className="h-5 w-5" />
         </Button>
       )}
-      {previewContent && <ContentDetailModal content={previewContent} onClose={() => setPreviewContent(null)} onOpenElement={(element) => openElementPreview(element, previewContent.elements)} />}
+      {previewContent && (
+        <ContentDetailModal
+          content={previewContent}
+          onClose={() => setPreviewContent(null)}
+          onOpenElement={(element) => openElementPreview(element, previewContent.elements)}
+          onTagSearch={(tag) => {
+            setPreviewContent(null);
+            onTagSearch(tag);
+          }}
+        />
+      )}
       {previewElement && <MediaElementModal element={previewElement} onClose={() => setPreviewElement(null)} onOpenElement={(element) => openElementPreview(element, previewContent?.elements ?? [previewElement])} />}
     </section>
   );
@@ -2476,7 +2589,7 @@ function tagVisibilityLabel(visibility: TagVisibility) {
   return tagVisibilityOptions.find((option) => option.value === visibility)?.label ?? visibility;
 }
 
-function PicApiPreviewPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePreviewOpener }) {
+function PicApiPreviewPage({ onOpenImagePreview, onTagSearch }: { onOpenImagePreview: ImagePreviewOpener; onTagSearch: TagSearchHandler }) {
   const [mode, setMode] = useState<PicPreviewMode>("latest");
   const [viewMode, setViewMode] = useState<PicViewMode>("display");
   const [tagMode, setTagMode] = useState<TagMode>("and");
@@ -2659,9 +2772,7 @@ function PicApiPreviewPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePr
                 </div>
                 <div className="mb-2 flex max-h-14 shrink-0 flex-wrap gap-1 overflow-hidden">
                   {content.tags.map((tag) => (
-                    <Badge key={tag} className="border-primary/30 bg-primary-muted text-primary-text">
-                      {tag}
-                    </Badge>
+                    <TagSearchBadge key={tag} tag={tag} onSearch={onTagSearch} />
                   ))}
                   {content.tags.length === 0 && <span className="text-xs text-muted-foreground">暂无 tag</span>}
                 </div>
@@ -2674,7 +2785,17 @@ function PicApiPreviewPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePr
           {items.length === 0 && <Card className="p-8 text-center text-sm text-muted-foreground">没有符合当前条件的内容。</Card>}
         </>
       )}
-      {previewContent && <ContentDetailModal content={previewContent} onClose={() => setPreviewContent(null)} onOpenElement={(element) => openElementPreview(element, previewContent.elements)} />}
+      {previewContent && (
+        <ContentDetailModal
+          content={previewContent}
+          onClose={() => setPreviewContent(null)}
+          onOpenElement={(element) => openElementPreview(element, previewContent.elements)}
+          onTagSearch={(tag) => {
+            setPreviewContent(null);
+            onTagSearch(tag);
+          }}
+        />
+      )}
       {previewElement && <MediaElementModal element={previewElement} onClose={() => setPreviewElement(null)} onOpenElement={(element) => openElementPreview(element, previewContent?.elements ?? [previewElement])} />}
     </section>
   );
@@ -2737,7 +2858,7 @@ function AuditLogModal({ detail, onClose }: { detail: AuditDetailDto; onClose: (
   );
 }
 
-function AuditsPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePreviewOpener }) {
+function AuditsPage({ onOpenImagePreview, onTagSearch }: { onOpenImagePreview: ImagePreviewOpener; onTagSearch: TagSearchHandler }) {
   const [state, setState] = useState<AuditState | "all">("pending");
   const [type, setType] = useState<MediaType | "all">("all");
   const [items, setItems] = useState<AuditListItemDto[]>([]);
@@ -2831,9 +2952,7 @@ function AuditsPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePreviewOp
             </div>
             <div className="flex max-h-16 flex-wrap gap-1 overflow-hidden">
               {content.tags.map((tag) => (
-                <Badge key={tag} className="border-primary/30 bg-primary-muted text-primary-text">
-                  {tag}
-                </Badge>
+                <TagSearchBadge key={tag} tag={tag} onSearch={onTagSearch} />
               ))}
               {content.tags.length === 0 && <span className="text-xs text-muted-foreground">暂无 tag</span>}
             </div>
@@ -2862,7 +2981,17 @@ function AuditsPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePreviewOp
         ))}
       </div>
       {items.length === 0 && <Card className="p-8 text-center text-sm text-muted-foreground">没有符合条件的审批内容。</Card>}
-      {previewContent && <ContentDetailModal content={previewContent} onClose={() => setPreviewContent(null)} onOpenElement={(element) => openElementPreview(element, previewContent.elements)} />}
+      {previewContent && (
+        <ContentDetailModal
+          content={previewContent}
+          onClose={() => setPreviewContent(null)}
+          onOpenElement={(element) => openElementPreview(element, previewContent.elements)}
+          onTagSearch={(tag) => {
+            setPreviewContent(null);
+            onTagSearch(tag);
+          }}
+        />
+      )}
       {previewElement && <MediaElementModal element={previewElement} onClose={() => setPreviewElement(null)} onOpenElement={(element) => openElementPreview(element, previewContent?.elements ?? [previewElement])} />}
       {auditDetail && <AuditLogModal detail={auditDetail} onClose={() => setAuditDetail(null)} />}
     </section>
@@ -3080,10 +3209,220 @@ function TagEditModal({ tag, onClose, onSaved }: { tag: TagDto; onClose: () => v
   );
 }
 
-function TagManagementPage() {
+function TagContentPreviewModal({
+  tag,
+  onClose,
+  onOpenImagePreview,
+  onTagSearch,
+}: {
+  tag: string;
+  onClose: () => void;
+  onOpenImagePreview: ImagePreviewOpener;
+  onTagSearch: TagSearchHandler;
+}) {
+  const [contents, setContents] = useState<MediaContentDto[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loadingPage, setLoadingPage] = useState<number | null>(null);
+  const [busyLikeId, setBusyLikeId] = useState("");
+  const [previewContent, setPreviewContent] = useState<MediaContentDto | null>(null);
+  const [previewElement, setPreviewElement] = useState<MediaElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
+  const [error, setError] = useState("");
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const loadingPageRef = useRef<number | null>(null);
+  const loadedPagesRef = useRef<Set<number>>(new Set());
+  const requestSeqRef = useRef(0);
+
+  const contentHeight = contents.length * tagPreviewRowHeight;
+  const visibleStart = Math.max(0, Math.floor(scrollTop / tagPreviewRowHeight) - tagPreviewOverscan);
+  const visibleEnd = Math.min(contents.length, Math.ceil((scrollTop + viewportHeight) / tagPreviewRowHeight) + tagPreviewOverscan);
+  const visibleContents = contents.slice(visibleStart, visibleEnd);
+  const hasLoadedAnyPage = loadedPagesRef.current.size > 0;
+  const canLoadMore = !hasLoadedAnyPage || contents.length < total;
+  const initialLoading = loadingPage === 1 && contents.length === 0;
+
+  async function loadPage(page: number, requestSeq = requestSeqRef.current) {
+    if (loadedPagesRef.current.has(page) || loadingPageRef.current !== null) return;
+    loadingPageRef.current = page;
+    setLoadingPage(page);
+    try {
+      const result = await listMedia({
+        tags: [tag],
+        tagMode: "and",
+        sort: defaultLibrarySort,
+        auditState: "approved",
+        page,
+        size: tagPreviewPageSize,
+      });
+      if (requestSeq !== requestSeqRef.current) return;
+      loadedPagesRef.current.add(page);
+      setTotal(result.total);
+      setContents((current) => {
+        if (page === 1) return result.data;
+        const existingIds = new Set(current.map((content) => content.id));
+        return [...current, ...result.data.filter((content) => !existingIds.has(content.id))];
+      });
+      setError("");
+    } catch (cause) {
+      if (requestSeq === requestSeqRef.current) setError(cause instanceof Error ? cause.message : "加载 tag 内容失败");
+    } finally {
+      if (requestSeq === requestSeqRef.current) {
+        loadingPageRef.current = null;
+        setLoadingPage(null);
+      }
+    }
+  }
+
+  function loadNextPage() {
+    if (!canLoadMore) return;
+    const loadedPages = Array.from(loadedPagesRef.current);
+    const nextPage = loadedPages.length === 0 ? 1 : Math.max(...loadedPages) + 1;
+    void loadPage(nextPage);
+  }
+
+  function handleScroll(event: UIEvent<HTMLDivElement>) {
+    const target = event.currentTarget;
+    setScrollTop(target.scrollTop);
+    setViewportHeight(target.clientHeight);
+    if (target.scrollHeight - target.scrollTop - target.clientHeight < tagPreviewRowHeight * 2) loadNextPage();
+  }
+
+  function openElementPreview(element: MediaElement, elements: MediaElement[]) {
+    if (element.type === "image") {
+      const groups = collectContentImagePreviewGroups(contents);
+      const groupIndex = findImagePreviewGroupIndex(groups, element);
+      onOpenImagePreview(elements, element, groups, groupIndex);
+      return;
+    }
+    setPreviewElement(element);
+  }
+
+  function updateContentLikeCount(contentId: string, likeCount: number) {
+    setContents((current) => current.map((content) => (content.id === contentId ? { ...content, likeCount } : content)));
+    setPreviewContent((current) => (current?.id === contentId ? { ...current, likeCount } : current));
+  }
+
+  async function submitLike(contentId: string) {
+    setBusyLikeId(contentId);
+    try {
+      const result = await likePicContent(contentId);
+      updateContentLikeCount(contentId, result.likeCount);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "点赞失败");
+    } finally {
+      setBusyLikeId("");
+    }
+  }
+
+  useEffect(() => {
+    requestSeqRef.current += 1;
+    loadingPageRef.current = null;
+    loadedPagesRef.current = new Set();
+    setContents([]);
+    setTotal(0);
+    setScrollTop(0);
+    setViewportHeight(scrollContainerRef.current?.clientHeight ?? 0);
+    setError("");
+    if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0;
+    void loadPage(1, requestSeqRef.current);
+  }, [tag]);
+
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const observedContainer = container;
+    function syncViewport() {
+      setViewportHeight(observedContainer.clientHeight);
+      setScrollTop(observedContainer.scrollTop);
+    }
+    syncViewport();
+    const observer = new ResizeObserver(syncViewport);
+    observer.observe(observedContainer);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    // 内容不足一屏时主动续页，避免虚拟列表初始区域没有滚动条。
+    if (viewportHeight <= 0 || loadingPageRef.current !== null || !canLoadMore) return;
+    if (contentHeight <= viewportHeight + tagPreviewRowHeight) loadNextPage();
+  }, [canLoadMore, contentHeight, viewportHeight]);
+
+  return (
+    <Modal title="tag 内容预览" subtitle={tag} closeLabel="关闭 tag 内容预览" zIndex="z-30" maxWidth="max-w-5xl" onClose={onClose}>
+      <div className="flex h-[calc(92vh-3rem)] min-h-0 flex-col bg-surface-muted">
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-surface px-3 py-2 sm:px-4">
+          <div className="min-w-0 text-sm text-muted-foreground">
+            已加载 <span className="font-medium text-foreground">{contents.length}</span>
+            {total > 0 && <> / <span className="font-medium text-foreground">{total}</span></>}
+          </div>
+          <Button className="h-8 shrink-0" variant="secondary" onClick={loadNextPage} disabled={!canLoadMore || loadingPage !== null}>
+            {loadingPage ? "加载中" : "加载更多"}
+          </Button>
+        </div>
+        {error && <div className="shrink-0 border-b border-red-500/20 bg-red-500/10 px-4 py-2 text-sm text-red-600 dark:text-red-400">{error}</div>}
+        <div ref={scrollContainerRef} className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4" onScroll={handleScroll}>
+          {initialLoading && <div className="p-8 text-center text-sm text-muted-foreground">正在加载内容...</div>}
+          {!initialLoading && contents.length === 0 && !error && <div className="p-8 text-center text-sm text-muted-foreground">这个 tag 下暂无已通过内容。</div>}
+          {contents.length > 0 && (
+            <div className="relative mx-auto w-full max-w-4xl" style={{ height: Math.max(contentHeight, viewportHeight) }}>
+              {visibleContents.map((content, offset) => {
+                const index = visibleStart + offset;
+                return (
+                  <ContentLibraryCard
+                    key={content.id}
+                    content={content}
+                    layout="virtual"
+                    className="absolute left-0 right-0"
+                    style={{ top: index * tagPreviewRowHeight }}
+                    busyLikeId={busyLikeId}
+                    onLike={(contentId) => void submitLike(contentId)}
+                    onOpenContent={setPreviewContent}
+                    onOpenElement={(element) => openElementPreview(element, content.elements)}
+                    onTagSearch={(nextTag) => {
+                      onClose();
+                      onTagSearch(nextTag);
+                    }}
+                  />
+                );
+              })}
+            </div>
+          )}
+          {!initialLoading && contents.length > 0 && loadingPage !== null && <div className="py-3 text-center text-sm text-muted-foreground">继续加载...</div>}
+          {!initialLoading && total > 0 && contents.length >= total && <div className="py-3 text-center text-xs text-subtle-foreground">已加载全部内容</div>}
+        </div>
+      </div>
+      {previewContent && (
+        <ContentDetailModal
+          content={previewContent}
+          onClose={() => setPreviewContent(null)}
+          onOpenElement={(element) => openElementPreview(element, previewContent.elements)}
+          onTagSearch={(nextTag) => {
+            setPreviewContent(null);
+            onClose();
+            onTagSearch(nextTag);
+          }}
+        />
+      )}
+      {previewElement && <MediaElementModal element={previewElement} onClose={() => setPreviewElement(null)} onOpenElement={(element) => openElementPreview(element, previewContent?.elements ?? [previewElement])} />}
+    </Modal>
+  );
+}
+
+function TagManagementPage({
+  onOpenLibraryTag,
+  onOpenImagePreview,
+  onTagSearch,
+}: {
+  onOpenLibraryTag: TagSearchHandler;
+  onOpenImagePreview: ImagePreviewOpener;
+  onTagSearch: TagSearchHandler;
+}) {
   const initialRouteState = readTagStateFromUrl();
   const [query, setQuery] = useState(initialRouteState.query);
   const [sort, setSort] = useState<TagSort>(initialRouteState.sort);
+  const [visibility, setVisibility] = useState<TagVisibilityFilter>(initialRouteState.visibility);
   const [currentPage, setCurrentPage] = useState(initialRouteState.page);
   const [pageSize, setPageSize] = useState(initialRouteState.size);
   const [tags, setTags] = useState<TagDto[]>([]);
@@ -3094,8 +3433,10 @@ function TagManagementPage() {
   const [mergeSourceTags, setMergeSourceTags] = useState<string[]>([]);
   const [mergeTargetTags, setMergeTargetTags] = useState<string[]>([]);
   const [editingTag, setEditingTag] = useState<TagDto | null>(null);
+  const [previewTag, setPreviewTag] = useState<TagDto | null>(null);
   const [showSidePagination, setShowSidePagination] = useState(false);
   const [pendingDeleteTag, setPendingDeleteTag] = useState("");
+  const [visibilityBusyTag, setVisibilityBusyTag] = useState("");
   const [error, setError] = useState("");
   const topPaginationRef = useRef<HTMLDivElement | null>(null);
   const bottomPaginationRef = useRef<HTMLDivElement | null>(null);
@@ -3111,7 +3452,7 @@ function TagManagementPage() {
   const pagedTags = tags.slice(pageStart, pageStart + pageSize);
 
   async function refreshTagData() {
-    const nextTags = await listTags(query, sort);
+    const nextTags = await listTags(query, sort, visibility);
     setTags(nextTags);
     setTagsLoaded(true);
     setEditingTag((current) => (current ? nextTags.find((tag) => tag.name === current.name) ?? current : null));
@@ -3123,22 +3464,22 @@ function TagManagementPage() {
       const next = readTagStateFromUrl();
       setQuery(next.query);
       setSort(next.sort);
+      setVisibility(next.visibility);
       setCurrentPage(next.page);
       setPageSize(next.size);
     }
 
-    window.addEventListener("popstate", syncRouteState);
-    return () => window.removeEventListener("popstate", syncRouteState);
+    return addRouteStateChangeListener(syncRouteState);
   }, []);
 
   useEffect(() => {
-    updateTagSearchQuery({ query, sort, page: currentPage, size: pageSize });
-  }, [currentPage, pageSize, query, sort]);
+    updateTagSearchQuery({ query, sort, visibility, page: currentPage, size: pageSize });
+  }, [currentPage, pageSize, query, sort, visibility]);
 
   useEffect(() => {
     refreshTagData()
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载 tag 失败"));
-  }, [query, sort]);
+  }, [query, sort, visibility]);
 
   useEffect(() => {
     if (tagsLoaded && currentPage > totalPages) setCurrentPage(totalPages);
@@ -3237,6 +3578,22 @@ function TagManagementPage() {
     }
   }
 
+  async function toggleTagVisibility(tag: TagDto) {
+    const nextVisibility: TagVisibility = tag.visibility === "public" ? "private" : "public";
+    try {
+      setVisibilityBusyTag(tag.name);
+      await updateTagScope(tag.name, {
+        visibility: nextVisibility,
+        scopes: nextVisibility === "public" ? [] : tag.scopes,
+      });
+      await refreshTagData();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "切换 tag 可见性失败");
+    } finally {
+      setVisibilityBusyTag("");
+    }
+  }
+
   function changePageSize(size: number) {
     setPageSize(size);
     setCurrentPage(defaultTagPage);
@@ -3281,6 +3638,15 @@ function TagManagementPage() {
             options={tagSortOptions}
             onChange={(nextSort) => {
               setSort(nextSort);
+              setCurrentPage(defaultTagPage);
+            }}
+          />
+          <SelectField
+            label="可见性"
+            value={visibility}
+            options={tagVisibilityFilterOptions}
+            onChange={(nextVisibility) => {
+              setVisibility(nextVisibility);
               setCurrentPage(defaultTagPage);
             }}
           />
@@ -3339,7 +3705,7 @@ function TagManagementPage() {
       <div ref={topPaginationRef} className="xl:mx-20">{renderPagination("top")}</div>
       {showSidePagination && renderPagination("side")}
       <Card className="overflow-hidden xl:mx-20">
-        <div className="hidden grid-cols-[minmax(120px,1fr)_minmax(160px,1.2fr)_minmax(130px,0.9fr)_80px_145px_180px] gap-3 border-b border-border px-4 py-3 text-xs font-semibold text-muted-foreground md:grid">
+        <div className="hidden grid-cols-[minmax(120px,1fr)_minmax(160px,1.2fr)_minmax(130px,0.9fr)_80px_145px_220px] gap-3 border-b border-border px-4 py-3 text-xs font-semibold text-muted-foreground md:grid">
           <span>Tag</span>
           <span>Alias</span>
           <span>可见性</span>
@@ -3351,12 +3717,20 @@ function TagManagementPage() {
           <div
             key={tag.name}
             className={cn(
-              "grid gap-2 border-b border-border px-3 py-3 text-sm last:border-b-0 sm:px-4 md:grid-cols-[minmax(120px,1fr)_minmax(160px,1.2fr)_minmax(130px,0.9fr)_80px_145px_180px] md:items-center md:gap-3",
+              "grid gap-2 border-b border-border px-3 py-3 text-sm last:border-b-0 sm:px-4 md:grid-cols-[minmax(120px,1fr)_minmax(160px,1.2fr)_minmax(130px,0.9fr)_80px_145px_220px] md:items-center md:gap-3",
               (pageStart + index) % 2 === 0 ? "bg-surface" : "bg-surface-muted",
             )}
           >
             <div className="min-w-0">
-              <div className="truncate font-medium">{tag.name}</div>
+              <button
+                type="button"
+                className="max-w-full truncate rounded text-left font-medium text-foreground outline-none transition-colors hover:text-primary-text focus-visible:ring-2 focus-visible:ring-primary"
+                title={`查看 ${tag.name} 的内容`}
+                aria-label={`在内容库查看 ${tag.name}`}
+                onClick={() => onOpenLibraryTag(tag.name)}
+              >
+                {tag.name}
+              </button>
             </div>
             <div className="flex min-w-0 flex-wrap gap-1">
               {(tag.aliases ?? []).map((alias) => (
@@ -3367,14 +3741,19 @@ function TagManagementPage() {
               {(tag.aliases ?? []).length === 0 && <span className="text-xs text-subtle-foreground">暂无 alias</span>}
             </div>
             <div className="flex min-w-0 flex-wrap gap-1">
-              <span
+              <button
+                type="button"
                 className={cn(
-                  "inline-flex rounded-full border px-2 py-0.5 text-xs font-medium",
+                  "inline-flex h-7 shrink-0 items-center rounded-full border px-2 text-xs font-medium transition-colors disabled:opacity-60",
                   tag.visibility === "public" ? "border-primary/30 bg-primary-muted text-primary-text" : "border-border bg-surface text-muted-foreground",
                 )}
+                disabled={visibilityBusyTag === tag.name}
+                title={`点击切换为${tag.visibility === "public" ? "私有" : "公开"}`}
+                aria-label={`将 ${tag.name} 切换为${tag.visibility === "public" ? "私有" : "公开"}`}
+                onClick={() => void toggleTagVisibility(tag)}
               >
-                {tagVisibilityLabel(tag.visibility)}
-              </span>
+                {visibilityBusyTag === tag.name ? "保存中" : tagVisibilityLabel(tag.visibility)}
+              </button>
               {tag.visibility === "private" && (
                 tag.scopes.length > 0
                   ? tag.scopes.map((scope) => (
@@ -3398,6 +3777,10 @@ function TagManagementPage() {
               <span className="text-xs text-subtle-foreground">{tag.createdAt ? formatDateTime(tag.createdAt) : "--"}</span>
             </div>
             <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
+              <Button className="h-8 w-full sm:w-auto" variant="secondary" onClick={() => setPreviewTag(tag)}>
+                <Image className="h-4 w-4" />
+                预览
+              </Button>
               <Button className="h-8 w-full sm:w-auto" variant="secondary" onClick={() => setEditingTag(tag)}>
                 编辑
               </Button>
@@ -3412,6 +3795,17 @@ function TagManagementPage() {
       </Card>
       <div ref={bottomPaginationRef} className="xl:mx-20">{renderPagination("bottom")}</div>
       {editingTag && <TagEditModal tag={editingTag} onClose={() => setEditingTag(null)} onSaved={refreshTagData} />}
+      {previewTag && (
+        <TagContentPreviewModal
+          tag={previewTag.name}
+          onClose={() => setPreviewTag(null)}
+          onOpenImagePreview={onOpenImagePreview}
+          onTagSearch={(nextTag) => {
+            setPreviewTag(null);
+            onTagSearch(nextTag);
+          }}
+        />
+      )}
     </section>
   );
 }
@@ -3607,7 +4001,7 @@ function FileReferenceRow({
   );
 }
 
-function FileReferencesPage({ onOpenImagePreview }: { onOpenImagePreview: ImagePreviewOpener }) {
+function FileReferencesPage({ onOpenImagePreview, onTagSearch }: { onOpenImagePreview: ImagePreviewOpener; onTagSearch: TagSearchHandler }) {
   const [mode, setMode] = useState<MediaFileReferenceMode>("unreferenced");
   const [query, setQuery] = useState("");
   const [keyword, setKeyword] = useState("");
@@ -3816,7 +4210,17 @@ function FileReferencesPage({ onOpenImagePreview }: { onOpenImagePreview: ImageP
         {files.length === 0 && <div className="p-8 text-center text-sm text-muted-foreground">没有符合条件的文件。</div>}
       </Card>
       {previewingOwnerId && <div className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2 rounded-md border border-border bg-surface px-3 py-2 text-sm shadow-lg">正在加载引用内容 {previewingOwnerId}</div>}
-      {previewContent && <ContentDetailModal content={previewContent} onClose={() => setPreviewContent(null)} onOpenElement={(element) => openElementPreview(element, previewContent.elements)} />}
+      {previewContent && (
+        <ContentDetailModal
+          content={previewContent}
+          onClose={() => setPreviewContent(null)}
+          onOpenElement={(element) => openElementPreview(element, previewContent.elements)}
+          onTagSearch={(tag) => {
+            setPreviewContent(null);
+            onTagSearch(tag);
+          }}
+        />
+      )}
       {previewElement && <MediaElementModal element={previewElement} onClose={() => setPreviewElement(null)} onOpenElement={(element) => openElementPreview(element, [element])} />}
     </section>
   );
@@ -4448,8 +4852,7 @@ export default function App() {
       if (nextPage === "workspace") setFilters(readWorkspaceFiltersFromUrl());
     }
 
-    window.addEventListener("popstate", syncRouteState);
-    return () => window.removeEventListener("popstate", syncRouteState);
+    return addRouteStateChangeListener(syncRouteState);
   }, []);
 
   useEffect(() => {
@@ -4501,11 +4904,33 @@ export default function App() {
 
   function changePage(nextPage: PageKey) {
     const nextPath = pagePaths[nextPage];
+    const samePage = page === nextPage;
     if (window.location.pathname !== nextPath || window.location.search) {
       window.history.pushState(null, "", nextPath);
     }
     setPage(nextPage);
     if (nextPage === "workspace") setFilters(defaultMediaFilters);
+    if (samePage) emitAppRouteChange();
+  }
+
+  function openTagSearch(tag: string) {
+    const name = tag.trim();
+    if (!name) return;
+    const params = new URLSearchParams({ q: name });
+    const samePage = page === "tags";
+    window.history.pushState(null, "", `${pagePaths.tags}?${params.toString()}`);
+    setPage("tags");
+    if (samePage) emitAppRouteChange();
+  }
+
+  function openLibraryTag(tag: string) {
+    const name = tag.trim();
+    if (!name) return;
+    const params = new URLSearchParams({ tags: name });
+    const samePage = page === "library";
+    window.history.pushState(null, "", `${pagePaths.library}?${params.toString()}`);
+    setPage("library");
+    if (samePage) emitAppRouteChange();
   }
 
   async function refreshOverview() {
@@ -4793,12 +5218,12 @@ export default function App() {
               pastingClipboard={pastingClipboard}
             />
           )}
-          {page === "library" && <ContentLibraryPage onOpenImagePreview={openImagePreview} onOpenWorkspace={() => changePage("workspace")} />}
-          {page === "pic" && <PicApiPreviewPage onOpenImagePreview={openImagePreview} />}
-          {page === "audits" && <AuditsPage onOpenImagePreview={openImagePreview} />}
+          {page === "library" && <ContentLibraryPage onOpenImagePreview={openImagePreview} onOpenWorkspace={() => changePage("workspace")} onTagSearch={openTagSearch} />}
+          {page === "pic" && <PicApiPreviewPage onOpenImagePreview={openImagePreview} onTagSearch={openTagSearch} />}
+          {page === "audits" && <AuditsPage onOpenImagePreview={openImagePreview} onTagSearch={openTagSearch} />}
           {page === "events" && <EventsPage />}
-          {page === "tags" && <TagManagementPage />}
-          {page === "references" && <FileReferencesPage onOpenImagePreview={openImagePreview} />}
+          {page === "tags" && <TagManagementPage onOpenLibraryTag={openLibraryTag} onOpenImagePreview={openImagePreview} onTagSearch={openTagSearch} />}
+          {page === "references" && <FileReferencesPage onOpenImagePreview={openImagePreview} onTagSearch={openTagSearch} />}
           {page === "exports" && <DataExportsPage />}
         </main>
       </div>

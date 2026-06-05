@@ -8,6 +8,29 @@ type AppBackLayer = {
 };
 
 const appBackLayers: AppBackLayer[] = [];
+let escapeListenerActive = false;
+
+function handleEscapeKey(event: KeyboardEvent) {
+  if (event.key !== "Escape" || event.defaultPrevented) return;
+  if (!hasAppBackLayers()) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  closeLatestAppBackLayer();
+}
+
+function syncEscapeListener() {
+  if (typeof document === "undefined") return;
+  if (appBackLayers.length > 0 && !escapeListenerActive) {
+    // Esc 关闭当前最上层浮层，捕获阶段消费事件避免图片预览等局部快捷键重复关闭。
+    document.addEventListener("keydown", handleEscapeKey, { capture: true });
+    escapeListenerActive = true;
+    return;
+  }
+  if (appBackLayers.length === 0 && escapeListenerActive) {
+    document.removeEventListener("keydown", handleEscapeKey, { capture: true });
+    escapeListenerActive = false;
+  }
+}
 
 function emitAppBackLayerChange() {
   if (typeof window === "undefined") return;
@@ -32,6 +55,7 @@ function registerAppBackLayer(id: symbol, close: () => void) {
     return;
   }
   appBackLayers.push({ id, close });
+  syncEscapeListener();
   emitAppBackLayerChange();
 }
 
@@ -39,6 +63,7 @@ function unregisterAppBackLayer(id: symbol) {
   const index = appBackLayers.findIndex((layer) => layer.id === id);
   if (index < 0) return;
   appBackLayers.splice(index, 1);
+  syncEscapeListener();
   emitAppBackLayerChange();
 }
 

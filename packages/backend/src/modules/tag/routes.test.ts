@@ -56,6 +56,33 @@ describe("tag routes", () => {
     expect(response.json()).toMatchObject({ success: true, data: [{ name: "弔图", count: 2, aliases: ["dt"], createdAt: createdAt.toISOString() }] });
   });
 
+  it("按可见性筛选 tag 列表", async () => {
+    const createdAt = new Date("2026-01-01T00:00:00Z");
+    mockPrisma.tag.findMany.mockResolvedValue([
+      { name: "公开", visibility: "public", scopes: [], createdAt, updatedAt: createdAt },
+      { name: "私有", visibility: "private", scopes: ["qq:123456"], createdAt, updatedAt: createdAt },
+    ]);
+    mockPrisma.tagAlias.findMany.mockResolvedValue([]);
+    mockPrisma.contentTag.groupBy.mockResolvedValue([
+      { tag: "公开", _count: { tag: 3 }, _min: { createdAt } },
+      { tag: "私有", _count: { tag: 2 }, _min: { createdAt } },
+      { tag: "历史", _count: { tag: 1 }, _min: { createdAt } },
+    ]);
+    const app = await createTagApp();
+
+    const response = await app.inject({ method: "GET", url: "/api/tags?visibility=private" });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      success: true,
+      data: [
+        { name: "私有", visibility: "private", count: 2 },
+        { name: "历史", visibility: "private", count: 1 },
+      ],
+    });
+  });
+
   it("alias CRUD 会统一小写 alias", async () => {
     const row = { alias: "dt", tag: "弔图", createdAt: new Date("2026-01-01T00:00:00Z"), updatedAt: new Date("2026-01-01T00:00:00Z") };
     const tx = {

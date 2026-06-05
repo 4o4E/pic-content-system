@@ -36,6 +36,7 @@ import type {
   Platform,
   TagAliasDto,
   TagDto,
+  TagVisibilityFilter,
   DeleteTagResultDto,
   MergeTagDto,
   RenameTagDto,
@@ -273,8 +274,8 @@ export function restoreMediaContentsToWorkspace(body: BatchRestoreMediaContentsT
   });
 }
 
-export function listTags(q?: string, sort?: TagSort) {
-  return request<TagDto[]>(withQuery("/api/tags", { q, sort }));
+export function listTags(q?: string, sort?: TagSort, visibility?: TagVisibilityFilter) {
+  return request<TagDto[]>(withQuery("/api/tags", { q, sort, visibility: visibility === "all" ? undefined : visibility }));
 }
 
 export function createTag(body: UpsertTagDto) {

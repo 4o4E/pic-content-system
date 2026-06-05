@@ -19,6 +19,7 @@ import { prisma } from "../../db/prisma.js";
 import { isValidTagScope, normalizeAlias, normalizeTagScopes, normalizeTags, resolveTagAliases, syncContentTags, tagScopeData } from "./tag-service.js";
 
 type TagSort = "count_desc" | "count_asc" | "time_desc" | "time_asc";
+type TagVisibilityFilter = TagVisibility | "all";
 type TagScopePayloadResult = { ok: true; data: ReturnType<typeof tagScopeData> } | { ok: false; error: string };
 
 function toTagAliasDto(row: { alias: string; tag: string; createdAt: Date; updatedAt: Date }): TagAliasDto {
@@ -47,6 +48,10 @@ function toTagDto(
 
 function resolveTagSort(sort: string | undefined): TagSort {
   return sort === "count_asc" || sort === "time_desc" || sort === "time_asc" ? sort : "count_desc";
+}
+
+function resolveTagVisibilityFilter(visibility: string | undefined): TagVisibilityFilter {
+  return visibility === "public" || visibility === "private" ? visibility : "all";
 }
 
 function tagCreatedTime(value: string | undefined, fallback: number) {
@@ -97,9 +102,10 @@ async function removeTagFromContents(tx: Prisma.TransactionClient, tag: string) 
 }
 
 export async function registerTagRoutes(app: FastifyInstance) {
-  app.get<{ Querystring: { q?: string; sort?: TagSort }; Reply: ApiResp<TagDto[]> }>("/api/tags", async (request) => {
+  app.get<{ Querystring: { q?: string; sort?: TagSort; visibility?: TagVisibilityFilter }; Reply: ApiResp<TagDto[]> }>("/api/tags", async (request) => {
     const q = request.query.q?.trim();
     const sort = resolveTagSort(request.query.sort);
+    const visibility = resolveTagVisibilityFilter(request.query.visibility);
     const matchedTags = await prisma.tag.findMany({
       where: q
         ? {
@@ -134,6 +140,12 @@ export async function registerTagRoutes(app: FastifyInstance) {
     });
 
     const tagNames = Array.from(new Set([...matchedTags.map((row) => row.name), ...tagGroups.map((row) => row.tag), ...matchedAliases.map((row) => row.tag)]));
+    const metadataTags = q && tagNames.length > 0
+      ? await prisma.tag.findMany({
+          where: { name: { in: tagNames } },
+          orderBy: [{ name: "asc" }],
+        })
+      : matchedTags;
     const aliases = tagNames.length > 0
       ? await prisma.tagAlias.findMany({
           where: { tag: { in: tagNames } },
@@ -141,7 +153,7 @@ export async function registerTagRoutes(app: FastifyInstance) {
         })
       : [];
     const tagMap = new Map<string, TagDto>();
-    for (const row of matchedTags) {
+    for (const row of metadataTags) {
       tagMap.set(row.name, toTagDto(row));
     }
     for (const row of tagGroups) {
@@ -166,7 +178,10 @@ export async function registerTagRoutes(app: FastifyInstance) {
     return {
       success: true,
       message: "ok",
-      data: Array.from(tagMap.values()).sort((left, right) => sortTagRows(left, right, sort)).slice(0, 500),
+      data: Array.from(tagMap.values())
+        .filter((tag) => visibility === "all" || tag.visibility === visibility)
+        .sort((left, right) => sortTagRows(left, right, sort))
+        .slice(0, 500),
     };
   });
 

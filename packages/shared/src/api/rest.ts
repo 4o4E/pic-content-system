@@ -1,4 +1,5 @@
 export type TagVisibility = "public" | "private";
+export type TagVisibilityFilter = TagVisibility | "all";
 
 export interface AuthSessionDto {
   ok: boolean;

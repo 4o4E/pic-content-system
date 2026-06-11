@@ -1502,21 +1502,31 @@ function Modal({
 function ChatRecordMediaItem({
   element,
   active,
+  inline,
   onOpenMedia,
   onOpenChatRecord,
 }: {
   element: MediaElement;
   active?: boolean;
+  inline?: boolean;
   onOpenMedia: (element: MediaElement) => void;
   onOpenChatRecord: (element: ChatRecordElement) => void;
 }) {
   if (element.type === "text") {
-    return <div className="max-w-full whitespace-pre-wrap rounded-md bg-white px-3 py-2 text-sm leading-6 text-[#111827] shadow-sm sm:max-w-64">{element.content}</div>;
+    return <span className="whitespace-pre-wrap align-middle text-sm leading-6 text-[#111827]">{element.content}</span>;
   }
 
   if (element.type === "image") {
+    if (inline) {
+      return (
+        <button className="mx-0.5 inline-flex max-w-full align-middle" type="button" onClick={() => onOpenMedia(element)}>
+          <img className="inline-block max-h-7 max-w-24 object-contain align-middle" src={fileUrl(element.id)} alt="聊天图片" loading="lazy" />
+        </button>
+      );
+    }
+
     return (
-      <button className="block max-w-full overflow-hidden rounded-md bg-white sm:max-w-56" type="button" onClick={() => onOpenMedia(element)}>
+      <button className="block max-w-full overflow-hidden rounded-md bg-[#f8fafc] sm:max-w-56" type="button" onClick={() => onOpenMedia(element)}>
         <img className="max-h-60 w-full object-contain" src={fileUrl(element.id)} alt="聊天图片" loading="lazy" />
       </button>
     );
@@ -1566,6 +1576,64 @@ function ChatRecordMediaItem({
   );
 }
 
+function isInlineChatImage(element: MediaElement) {
+  if (element.type !== "image") return false;
+  const maxSide = Math.max(element.width, element.height);
+  // QQ 表情在聊天记录里仍是 image，小尺寸且有真实尺寸时才按行内表情渲染。
+  return maxSide >= 16 && maxSide <= 96;
+}
+
+function isInlineChatMessageElement(element: MediaElement) {
+  return element.type === "text" || isInlineChatImage(element);
+}
+
+function ChatRecordMessageBubble({
+  messages,
+  sourcePrefix,
+  activeSourceKey,
+  onOpenMedia,
+  onOpenChatRecord,
+}: {
+  messages: MediaElement[];
+  sourcePrefix: string;
+  activeSourceKey?: string;
+  onOpenMedia: (element: MediaElement) => void;
+  onOpenChatRecord: (sourceKey: string, element: ChatRecordElement) => void;
+}) {
+  if (messages.length === 0) {
+    return <div className="max-w-full rounded-md bg-white px-3 py-2 text-sm leading-6 text-[#6b7280] shadow-sm">空消息</div>;
+  }
+
+  return (
+    <div className="max-w-full rounded-md bg-white px-3 py-2 shadow-sm">
+      <div className="max-w-full text-sm leading-6 text-[#111827]">
+        {messages.map((message, messageIndex) => {
+          const sourceKey = `${sourcePrefix}-${messageIndex}-${elementSummary(message)}`;
+          const inline = isInlineChatMessageElement(message);
+          const item = (
+            <ChatRecordMediaItem
+              key={sourceKey}
+              element={message}
+              active={activeSourceKey === sourceKey}
+              inline={inline}
+              onOpenMedia={onOpenMedia}
+              onOpenChatRecord={(nestedElement) => onOpenChatRecord(sourceKey, nestedElement)}
+            />
+          );
+
+          if (inline) return item;
+
+          return (
+            <div key={sourceKey} className="mt-2 first:mt-0">
+              {item}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ChatRecordPanel({
   item,
   index,
@@ -1602,21 +1670,13 @@ function ChatRecordPanel({
                     <span className="max-w-36 truncate">{displayName}</span>
                     <span>{formatDateTime(speak.time)}</span>
                   </div>
-                  <div className="flex flex-col items-start gap-2">
-                    {speak.message.map((message, messageIndex) => {
-                      const sourceKey = `${speakIndex}-${messageIndex}-${elementSummary(message)}`;
-                      return (
-                        <div key={sourceKey} className="max-w-full">
-                          <ChatRecordMediaItem
-                            element={message}
-                            active={nextItem?.sourceKey === sourceKey}
-                            onOpenMedia={onOpenMedia}
-                            onOpenChatRecord={(nestedElement) => onOpenChatRecord(index, sourceKey, nestedElement)}
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
+                  <ChatRecordMessageBubble
+                    messages={speak.message}
+                    sourcePrefix={`${speakIndex}`}
+                    activeSourceKey={nextItem?.sourceKey}
+                    onOpenMedia={onOpenMedia}
+                    onOpenChatRecord={(sourceKey, nestedElement) => onOpenChatRecord(index, sourceKey, nestedElement)}
+                  />
                 </div>
               </div>
             );

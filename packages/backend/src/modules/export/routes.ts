@@ -80,8 +80,11 @@ export async function registerDataExportRoutes(app: FastifyInstance, config: App
     if (item.status !== "ready") return reply.code(400).send({ success: false, message: "导出包尚未就绪" });
     const zip = dataExportZipPath(config, request.params.id);
     if (!fs.existsSync(zip)) return reply.code(404).send({ success: false, message: "导出 zip 文件不存在" });
+    const stat = await fs.promises.stat(zip);
+    if (!stat.isFile()) return reply.code(404).send({ success: false, message: "导出 zip 文件不存在" });
     reply
       .type("application/zip")
+      .header("Content-Length", stat.size.toString())
       .header("Content-Disposition", `attachment; filename="${item.zipFileName}"; filename*=UTF-8''${encodeURIComponent(item.zipFileName)}`);
     return fs.createReadStream(zip);
   });

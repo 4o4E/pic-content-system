@@ -2020,6 +2020,7 @@ function WorkspacePage({
   onRemoveElement,
   onOpenImagePreview,
   onSubmit,
+  onSubmitSeparately,
   pastingClipboard,
 }: {
   assets: MediaAssetDto[];
@@ -2042,6 +2043,7 @@ function WorkspacePage({
   onRemoveElement: (index: number) => void;
   onOpenImagePreview: ImagePreviewOpener;
   onSubmit: () => void;
+  onSubmitSeparately: () => void;
   pastingClipboard: boolean;
 }) {
   const [draggedElementIndex, setDraggedElementIndex] = useState<number | null>(null);
@@ -2123,9 +2125,15 @@ function WorkspacePage({
               placeholder="输入 tag 名称筛选或新建"
               onChange={(tags) => onDraftChange({ title: draft.title, tags })}
             />
-            <Button className="h-9 w-full sm:w-auto" disabled={!canSubmitDraft} variant="primary" onClick={onSubmit}>
-              提交
-            </Button>
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:w-auto">
+              <Button className="h-9 w-full sm:w-auto" disabled={!canSubmitDraft} variant="secondary" onClick={onSubmitSeparately}>
+                <ListChecks className="h-4 w-4" />
+                分别提交
+              </Button>
+              <Button className="h-9 w-full sm:w-auto" disabled={!canSubmitDraft} variant="primary" onClick={onSubmit}>
+                提交
+              </Button>
+            </div>
           </div>
 
           <div className="mb-4 grid grid-cols-2 gap-2 rounded-md border border-border bg-surface-muted p-3 sm:flex sm:flex-wrap sm:justify-end">
@@ -5225,12 +5233,17 @@ export default function App() {
     }
   }
 
-  async function submitCurrentDraft() {
+  function canSubmitCurrentDraft() {
     if (draft.elements.length === 0) return;
     if (!draft.tags.some((tag) => tag.trim())) {
       setError("请至少添加一个 tag 后再提交");
       return;
     }
+    return true;
+  }
+
+  async function submitCurrentDraft() {
+    if (!canSubmitCurrentDraft()) return;
     try {
       await createMedia({
         title: draft.title?.trim() || undefined,
@@ -5242,9 +5255,32 @@ export default function App() {
       setSelectedIds([]);
       await refreshAssets();
       await refreshOverview();
-      changePage("library");
+      setError("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "提交内容失败");
+    }
+  }
+
+  async function submitDraftElementsSeparately() {
+    if (!canSubmitCurrentDraft()) return;
+    const alignedAssetIds = alignDraftAssetIds(draft.elements, draft.assetIds);
+    try {
+      for (const [index, element] of draft.elements.entries()) {
+        const assetId = alignedAssetIds[index];
+        await createMedia({
+          title: draft.title?.trim() || undefined,
+          tags: draft.tags,
+          elements: [element],
+          assetIds: assetId ? [assetId] : [],
+        });
+      }
+      setDraft(createEmptyDraft());
+      setSelectedIds([]);
+      await refreshAssets();
+      await refreshOverview();
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "分别提交内容失败");
     }
   }
 
@@ -5279,6 +5315,7 @@ export default function App() {
               onRemoveElement={removeDraftElement}
               onUpdateTextElement={updateDraftTextElement}
               onSubmit={() => void submitCurrentDraft()}
+              onSubmitSeparately={() => void submitDraftElementsSeparately()}
               onToggleAsset={toggleAsset}
               pastingClipboard={pastingClipboard}
             />

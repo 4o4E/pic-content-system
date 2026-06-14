@@ -609,15 +609,20 @@ function isEditablePasteTarget(target: EventTarget | null) {
   return Boolean(target.closest("input, textarea, select, [contenteditable='true'], [contenteditable='plaintext-only']"));
 }
 
+function sortLocalFilesByName(files: File[]) {
+  return [...files].sort((left, right) => left.name.localeCompare(right.name, "zh-CN", { numeric: true, sensitivity: "base" }));
+}
+
 function clipboardBlobsFromDataTransfer(data: DataTransfer | null) {
   if (!data) return [];
   const files = Array.from(data.files ?? []);
-  if (files.length > 0) return files;
-  return Array.from(data.items ?? []).flatMap((item) => {
+  if (files.length > 0) return sortLocalFilesByName(files);
+  const itemFiles = Array.from(data.items ?? []).flatMap((item) => {
     if (item.kind !== "file") return [];
     const file = item.getAsFile();
     return file ? [file] : [];
   });
+  return sortLocalFilesByName(itemFiles);
 }
 
 async function clipboardBlobsFromNavigator() {

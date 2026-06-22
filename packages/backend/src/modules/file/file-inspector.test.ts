@@ -17,6 +17,15 @@ function gifBuffer(width: number, height: number) {
   return buffer;
 }
 
+function mp4Buffer() {
+  const buffer = Buffer.alloc(32);
+  buffer.writeUInt32BE(32, 0);
+  buffer.write("ftyp", 4, "ascii");
+  buffer.write("isom", 8, "ascii");
+  buffer.write("mp41", 16, "ascii");
+  return buffer;
+}
+
 describe("inspectFileBuffer", () => {
   it("识别 png 的格式和尺寸", () => {
     const result = inspectFileBuffer(pngBuffer(320, 180));
@@ -35,6 +44,30 @@ describe("inspectFileBuffer", () => {
     expect(result.format).toBe("gif");
     expect(result.width).toBe(48);
     expect(result.height).toBe(32);
+  });
+
+  it("识别 mp4 视频格式", () => {
+    const result = inspectFileBuffer(mp4Buffer());
+
+    expect(result.mimeType).toBe("video/mp4");
+    expect(result.format).toBe("mp4");
+  });
+
+  it("识别 mp3 音频格式", () => {
+    const result = inspectFileBuffer(Buffer.from("ID3\u0004\u0000\u0000\u0000\u0000\u0000\u0000audio"));
+
+    expect(result.mimeType).toBe("audio/mpeg");
+    expect(result.format).toBe("mp3");
+  });
+
+  it("识别 wav 音频格式", () => {
+    const buffer = Buffer.alloc(16);
+    buffer.write("RIFF", 0, "ascii");
+    buffer.write("WAVE", 8, "ascii");
+    const result = inspectFileBuffer(buffer);
+
+    expect(result.mimeType).toBe("audio/wav");
+    expect(result.format).toBe("wav");
   });
 
   it("未知格式走通用文件兜底", () => {

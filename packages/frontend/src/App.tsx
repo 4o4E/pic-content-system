@@ -350,6 +350,15 @@ function collectImageElements(elements: MediaElement[]): Array<Extract<MediaElem
   });
 }
 
+function collectPreviewMediaElements(elements: MediaElement[]): Array<Extract<MediaElement, { type: "image" | "video" | "audio" }>> {
+  return elements.flatMap((element) => {
+    if (element.type === "image" || element.type === "video" || element.type === "audio") return [element];
+    if (element.type === "speak") return collectPreviewMediaElements(element.message);
+    if (element.type === "discuss") return collectPreviewMediaElements(element.content);
+    return [];
+  });
+}
+
 function hasChatRecordElement(elements: MediaElement[]): boolean {
   return elements.some((element) => {
     if (element.type === "speak" || element.type === "discuss") return true;
@@ -599,8 +608,8 @@ function mediaFilePreviewType(file: MediaFileReferenceItemDto): Extract<MediaTyp
   const mimeType = file.mimeType?.toLowerCase() ?? "";
   const format = file.format?.toLowerCase() ?? "";
   if (mimeType.startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp"].includes(format)) return "image";
-  if (mimeType.startsWith("video/") || ["mp4", "webm", "mov", "mkv"].includes(format)) return "video";
-  if (mimeType.startsWith("audio/") || ["mp3", "wav", "ogg", "flac", "m4a"].includes(format)) return "audio";
+  if (mimeType.startsWith("video/") || ["mp4", "webm", "mov", "m4v", "mkv"].includes(format)) return "video";
+  if (mimeType.startsWith("audio/") || ["mp3", "wav", "ogg", "flac", "m4a", "aac"].includes(format)) return "audio";
   return "file";
 }
 
@@ -630,7 +639,7 @@ async function clipboardBlobsFromNavigator() {
   const items = await navigator.clipboard.read();
   const blobs: Blob[] = [];
   for (const item of items) {
-    const type = item.types.find((value) => value.startsWith("image/"));
+    const type = item.types.find((value) => value.startsWith("image/") || value.startsWith("video/") || value.startsWith("audio/"));
     if (!type) continue;
     blobs.push(await item.getType(type));
   }
@@ -676,6 +685,30 @@ async function readImageSize(blob: Blob) {
   });
 }
 
+async function readMediaMetadata(blob: Blob, type: "video" | "audio") {
+  return new Promise<{ width?: number; height?: number; durationSeconds?: number }>((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const element = document.createElement(type);
+    // 上传前借浏览器解析本地媒体元数据，避免后端依赖额外音视频探测工具。
+    element.preload = "metadata";
+    element.onloadedmetadata = () => {
+      URL.revokeObjectURL(url);
+      const durationSeconds = Number.isFinite(element.duration) ? element.duration : undefined;
+      if (type === "video") {
+        const video = element as HTMLVideoElement;
+        resolve({ width: video.videoWidth || undefined, height: video.videoHeight || undefined, durationSeconds });
+        return;
+      }
+      resolve({ durationSeconds });
+    };
+    element.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error(type === "video" ? "视频元数据解析失败" : "音频元数据解析失败"));
+    };
+    element.src = url;
+  });
+}
+
 async function mediaFileToClipboardElement(file: MediaFileDto, blob: Blob): Promise<MediaElement> {
   const mimeType = file.mimeType ?? blob.type;
   const format = file.format ?? clipboardBlobFormat(blob) ?? "bin";
@@ -689,6 +722,30 @@ async function mediaFileToClipboardElement(file: MediaFileDto, blob: Blob): Prom
       file: false,
       width: size.width,
       height: size.height,
+    };
+  }
+  if (mimeType.startsWith("video/")) {
+    const metadata = file.width && file.height && file.durationSeconds != null
+      ? { width: file.width, height: file.height, durationSeconds: file.durationSeconds }
+      : await readMediaMetadata(blob, "video");
+    return {
+      type: "video",
+      id: file.md5,
+      format,
+      file: false,
+      width: metadata.width ?? file.width ?? 1,
+      height: metadata.height ?? file.height ?? 1,
+      durationSeconds: metadata.durationSeconds ?? file.durationSeconds ?? 0,
+    };
+  }
+  if (mimeType.startsWith("audio/")) {
+    const metadata = file.durationSeconds != null ? { durationSeconds: file.durationSeconds } : await readMediaMetadata(blob, "audio");
+    return {
+      type: "audio",
+      id: file.md5,
+      format,
+      file: false,
+      durationSeconds: metadata.durationSeconds ?? file.durationSeconds ?? 0,
     };
   }
   return {
@@ -712,6 +769,10 @@ function textPreview(content: string) {
 
 function elementToken(element: MediaElement) {
   return `[${elementLabel(element)}]`;
+}
+
+function isPreviewableElement(element: MediaElement) {
+  return element.type === "image" || element.type === "video" || element.type === "audio" || element.type === "file" || isChatRecordElement(element);
 }
 
 function StatusBadge({ status }: { status: MediaAssetStatus }) {
@@ -1097,8 +1158,11 @@ function AssetPreview({ element }: { element: MediaElement }) {
 
   if (element.type === "video") {
     return (
-      <div className="flex h-full items-center justify-center bg-surface-muted">
-        <FileVideo className="h-10 w-10 text-primary" />
+      <div className="relative flex h-full items-center justify-center bg-black">
+        <video className="h-full w-full object-cover" src={fileUrl(element.id)} muted preload="metadata" playsInline />
+        <div className="absolute inset-0 flex items-center justify-center bg-black/20 text-white">
+          <FileVideo className="h-10 w-10 drop-shadow" />
+        </div>
       </div>
     );
   }
@@ -1283,10 +1347,10 @@ function CompositeContentPreview({
 }: {
   elements: MediaElement[];
   onOpen?: () => void;
-  onOpenImage?: (element: Extract<MediaElement, { type: "image" }>) => void;
+  onOpenImage?: (element: MediaElement) => void;
 }) {
-  const imageElements = collectImageElements(elements);
-  const previewImages = imageElements.slice(0, 4);
+  const previewMediaElements = collectPreviewMediaElements(elements);
+  const previewMedia = previewMediaElements.slice(0, 4);
   const text = elements
     .filter((element): element is Extract<MediaElement, { type: "text" }> => element.type === "text")
     .map((element) => textPreview(element.content))
@@ -1308,21 +1372,36 @@ function CompositeContentPreview({
         }
       }}
     >
-      {previewImages.length > 0 && (
-        <div className={cn("mb-2 grid h-[58%] min-h-24 gap-1 overflow-hidden", previewImages.length === 1 ? "grid-cols-1" : "grid-cols-2")}>
-          {previewImages.map((element, index) => {
-            const imageNode = (
+      {previewMedia.length > 0 && (
+        <div className={cn("mb-2 grid h-[58%] min-h-24 gap-1 overflow-hidden", previewMedia.length === 1 ? "grid-cols-1" : "grid-cols-2")}>
+          {previewMedia.map((element, index) => {
+            const remaining = previewMediaElements.length - previewMedia.length;
+            const mediaNode = (
               <>
-                <img className="h-full w-full object-cover" src={fileUrl(element.id)} alt={`复合内容第 ${index + 1} 张图片`} loading="lazy" />
-                {index === previewImages.length - 1 && imageElements.length > previewImages.length && (
-                  <span className="absolute inset-0 flex items-center justify-center bg-black/55 text-sm font-semibold text-white">+{imageElements.length - previewImages.length}</span>
+                {element.type === "image" && <img className="h-full w-full object-cover" src={fileUrl(element.id)} alt={`复合内容第 ${index + 1} 个媒体`} loading="lazy" />}
+                {element.type === "video" && (
+                  <div className="relative h-full w-full bg-black">
+                    <video className="h-full w-full object-cover" src={fileUrl(element.id)} muted preload="metadata" playsInline />
+                    <span className="absolute inset-0 flex items-center justify-center bg-black/20 text-white">
+                      <FileVideo className="h-8 w-8 drop-shadow" />
+                    </span>
+                  </div>
+                )}
+                {element.type === "audio" && (
+                  <div className="flex h-full w-full items-center justify-center gap-2 bg-surface text-muted-foreground">
+                    <FileAudio className="h-7 w-7 text-primary" />
+                    <span className="max-w-[70%] truncate text-xs">音频</span>
+                  </div>
+                )}
+                {index === previewMedia.length - 1 && remaining > 0 && (
+                  <span className="absolute inset-0 flex items-center justify-center bg-black/55 text-sm font-semibold text-white">+{remaining}</span>
                 )}
               </>
             );
             if (!onOpenImage) {
               return (
                 <div key={`${element.id}-${index}`} className="relative min-h-0 overflow-hidden rounded-md border border-border bg-surface">
-                  {imageNode}
+                  {mediaNode}
                 </div>
               );
             }
@@ -1331,13 +1410,13 @@ function CompositeContentPreview({
                 key={`${element.id}-${index}`}
                 className="relative min-h-0 overflow-hidden rounded-md border border-border bg-surface outline-none hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary"
                 type="button"
-                aria-label={`打开第 ${index + 1} 张图片预览`}
+                aria-label={`打开第 ${index + 1} 个媒体预览`}
                 onClick={(event) => {
                   event.stopPropagation();
                   onOpenImage(element);
                 }}
               >
-                {imageNode}
+                {mediaNode}
               </button>
             );
           })}
@@ -1351,7 +1430,7 @@ function CompositeContentPreview({
         ))}
       </div>
       <div className="overflow-hidden text-sm leading-6 text-muted-foreground">
-        {text || (imageElements.length > 0 ? `${imageElements.length} 张图片，点击缩略图可预览。` : "复合内容中的媒体文件已用类型标记展示。")}
+        {text || (previewMediaElements.length > 0 ? `${previewMediaElements.length} 个媒体文件，点击缩略图可预览。` : "复合内容中的媒体文件已用类型标记展示。")}
       </div>
     </div>
   );
@@ -1854,16 +1933,17 @@ function MaterialCard({
   checked,
   onToggle,
   onAddToDraft,
-  onOpenImage,
+  onOpenPreview,
 }: {
   asset: MediaAssetDto;
   index: number;
   checked: boolean;
   onToggle: (id: string) => void;
   onAddToDraft: (id: string) => void;
-  onOpenImage: (element: MediaElement) => void;
+  onOpenPreview: (element: MediaElement) => void;
 }) {
   const selectable = asset.status !== "used" && asset.status !== "ignored";
+  const previewable = isPreviewableElement(asset.element);
 
   function handleDragStart(event: DragEvent<HTMLDivElement>) {
     if (!selectable) return;
@@ -1920,12 +2000,12 @@ function MaterialCard({
           </Button>
           <Button
             className="h-7 w-7 px-0"
-            disabled={asset.element.type !== "image"}
+            disabled={!previewable}
             variant="ghost"
-            aria-label={asset.element.type === "image" ? "预览图片" : "暂无预览操作"}
-            onClick={() => onOpenImage(asset.element)}
+            aria-label={previewable ? "预览素材" : "暂无预览操作"}
+            onClick={() => onOpenPreview(asset.element)}
           >
-            {asset.element.type === "image" ? <Search className="h-4 w-4" /> : <MoreHorizontal className="h-4 w-4" />}
+            {previewable ? <Search className="h-4 w-4" /> : <MoreHorizontal className="h-4 w-4" />}
           </Button>
         </div>
       </div>
@@ -2047,6 +2127,7 @@ function WorkspacePage({
   pastingClipboard: boolean;
 }) {
   const [draggedElementIndex, setDraggedElementIndex] = useState<number | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const canSubmitDraft = draft.elements.length > 0 && draft.tags.some((tag) => tag.trim());
 
   function handleDropAsset(event: DragEvent<HTMLDivElement>) {
@@ -2079,6 +2160,12 @@ function WorkspacePage({
     setDraggedElementIndex(null);
   }
 
+  function handleFileInputChange(event: FormEvent<HTMLInputElement>) {
+    const files = Array.from(event.currentTarget.files ?? []);
+    if (files.length > 0) onImportFiles(files);
+    event.currentTarget.value = "";
+  }
+
   return (
     <section className="min-h-0 flex-1 space-y-3 sm:space-y-4">
       <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-end">
@@ -2086,7 +2173,8 @@ function WorkspacePage({
           <FolderInput className="h-4 w-4" />
           {pastingClipboard ? "导入中" : "粘贴剪切板"}
         </Button>
-        <Button className="w-full sm:w-auto" variant="secondary">
+        <input ref={fileInputRef} className="hidden" multiple type="file" onChange={handleFileInputChange} />
+        <Button className="w-full sm:w-auto" variant="secondary" onClick={() => fileInputRef.current?.click()}>
           <Upload className="h-4 w-4" />
           上传素材
         </Button>
@@ -2204,7 +2292,7 @@ function WorkspacePage({
                   asset={asset}
                   checked={selectedIds.includes(asset.id)}
                   index={index}
-                  onOpenImage={(element) => onOpenImagePreview(assets.map((item) => item.element), element)}
+                  onOpenPreview={(element) => onOpenImagePreview(assets.map((item) => item.element), element)}
                   onAddToDraft={onAddAssetByDrag}
                   onToggle={onToggleAsset}
                 />
@@ -3939,7 +4027,17 @@ function FileReferenceStatCards({ stats }: { stats: MediaFileReferenceStatsDto }
 
 function mediaFileToElement(file: MediaFileReferenceItemDto): Extract<MediaElement, { type: "image" | "video" | "audio" | "file" }> {
   const type = mediaFilePreviewType(file);
-  return { type, id: file.md5 } as Extract<MediaElement, { type: "image" | "video" | "audio" | "file" }>;
+  const format = file.format ?? "bin";
+  if (type === "image") {
+    return { type, id: file.md5, format, file: false, width: file.width ?? 1, height: file.height ?? 1 };
+  }
+  if (type === "video") {
+    return { type, id: file.md5, format, file: false, width: file.width ?? 1, height: file.height ?? 1, durationSeconds: file.durationSeconds ?? 0 };
+  }
+  if (type === "audio") {
+    return { type, id: file.md5, format, file: false, durationSeconds: file.durationSeconds ?? 0 };
+  }
+  return { type, id: file.md5, format, file: true, mimeType: file.mimeType, sizeBytes: file.sizeBytes };
 }
 
 function FileReferencePreview({ file, onOpen }: { file: MediaFileReferenceItemDto; onOpen: (file: MediaFileReferenceItemDto) => void }) {
@@ -4827,6 +4925,7 @@ export default function App() {
   const [filters, setFilters] = useState<MediaFilters>(() => (pageFromPath(window.location.pathname) === "workspace" ? readWorkspaceFiltersFromUrl() : defaultMediaFilters));
   const [pendingAssetDeleteConfirm, setPendingAssetDeleteConfirm] = useState(false);
   const [imagePreview, setImagePreview] = useState(emptyImagePreviewState);
+  const [mediaPreviewElement, setMediaPreviewElement] = useState<MediaElement | null>(null);
   const [pastingClipboard, setPastingClipboard] = useState(false);
   const [pendingTotal, setPendingTotal] = useState(0);
   const [contentTotal, setContentTotal] = useState(0);
@@ -5054,6 +5153,10 @@ export default function App() {
   }
 
   function openImagePreview(elements: MediaElement[], activeElement: MediaElement, groups: ImagePreviewGroup[] = [], groupIndex = 0) {
+    if (activeElement.type !== "image") {
+      setMediaPreviewElement(activeElement);
+      return;
+    }
     const images = groups[groupIndex]?.images.length ? groups[groupIndex].images : collectImagePreviewItems(elements);
     const activeSrc = imagePreviewSrc(activeElement);
     const activeIndex = Math.max(
@@ -5118,7 +5221,7 @@ export default function App() {
     try {
       const blobs = await clipboardBlobsFromNavigator();
       if (blobs.length === 0) {
-        setError("剪切板里没有可粘贴的图片或文件");
+        setError("剪切板里没有可粘贴的图片、视频、音频或文件");
         return;
       }
       await pasteClipboardBlobs(blobs);
@@ -5330,6 +5433,7 @@ export default function App() {
         </main>
       </div>
       <ImagePreviewViewer state={imagePreview} onClose={closeImagePreview} />
+      {mediaPreviewElement && <MediaElementModal element={mediaPreviewElement} onClose={() => setMediaPreviewElement(null)} onOpenElement={(element) => openImagePreview([element], element)} />}
     </div>
   );
 }

@@ -10,6 +10,8 @@ import { COMMON_IMAGE_FORMATS, commonImageFormatText, inspectFileBuffer, isCommo
 import { storeMediaFile } from "./file-storage.js";
 
 const DECLARED_IMAGE_FORMATS = new Set<string>([...COMMON_IMAGE_FORMATS, "jpeg", "svg", "svg+xml", "avif", "bmp", "tif", "tiff", "ico", "heic", "heif"]);
+const DECLARED_VIDEO_FORMATS = new Set<string>(["mp4", "webm", "mov", "m4v", "mkv"]);
+const DECLARED_AUDIO_FORMATS = new Set<string>(["mp3", "wav", "ogg", "flac", "m4a", "aac"]);
 const FILE_MD5_RE = /^[0-9a-f]{32}$/;
 const FILE_CACHE_CONTROL = "private, max-age=31536000, immutable";
 
@@ -17,6 +19,24 @@ function isImageUploadRequest(body: CreateMediaFileDto, inspection: FileInspecti
   const mimeType = body.mimeType?.trim().toLowerCase();
   const format = body.format?.trim().toLowerCase().replace(/^\./, "");
   return inspection.mimeType.startsWith("image/") || mimeType?.startsWith("image/") || (format ? DECLARED_IMAGE_FORMATS.has(format) : false);
+}
+
+function declaredMediaInspection(body: CreateMediaFileDto, inspection: FileInspection): FileInspection {
+  const mimeType = body.mimeType?.trim().toLowerCase();
+  const format = body.format?.trim().toLowerCase().replace(/^\./, "");
+  const declaredVideo = mimeType?.startsWith("video/") || (format ? DECLARED_VIDEO_FORMATS.has(format) : false);
+  const declaredAudio = mimeType?.startsWith("audio/") || (format ? DECLARED_AUDIO_FORMATS.has(format) : false);
+  if (!declaredVideo && !declaredAudio) return inspection;
+  if (inspection.mimeType !== "application/octet-stream" || inspection.format !== "bin") return inspection;
+  // 音视频容器魔数不完整时信任浏览器声明，保证预览控件能拿到正确 Content-Type。
+  return {
+    ...inspection,
+    mimeType: mimeType ?? (declaredVideo ? "video/mp4" : "audio/mpeg"),
+    format: format ?? (declaredVideo ? "mp4" : "mp3"),
+    width: body.width,
+    height: body.height,
+    durationSeconds: body.durationSeconds,
+  };
 }
 
 function parsePositiveInt(value: string | undefined, fallback: number, max: number) {
@@ -50,6 +70,22 @@ function fileEtag(md5: string) {
 
 function requestMatchesEtag(value: string | undefined, etag: string) {
   return value?.split(",").map((item) => item.trim()).some((item) => item === "*" || item === etag) ?? false;
+}
+
+function parseRangeHeader(value: string | undefined, size: number) {
+  if (!value) return undefined;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(value.trim());
+  if (!match) return null;
+  const [, startText = "", endText = ""] = match;
+  if (!startText && !endText) return null;
+  // 支持 bytes=起点-终点 和 bytes=-后缀长度 两种浏览器媒体请求形式。
+  let start = startText ? Number(startText) : size - Number(endText);
+  let end = endText ? Number(endText) : size - 1;
+  if (!Number.isInteger(start) || !Number.isInteger(end)) return null;
+  start = Math.max(start, 0);
+  end = Math.min(end, size - 1);
+  if (start > end || start >= size) return null;
+  return { start, end };
 }
 
 function removeStoredObjects(config: AppConfig, files: Array<{ storageKey: string }>) {
@@ -215,15 +251,27 @@ export async function registerFileRoutes(app: FastifyInstance, config: AppConfig
     const etag = fileEtag(file.md5);
     reply.header("Cache-Control", FILE_CACHE_CONTROL);
     reply.header("ETag", etag);
+    reply.header("Accept-Ranges", "bytes");
     if (requestMatchesEtag(request.headers["if-none-match"], etag)) return reply.code(304).send();
-    reply.header("Content-Length", file.sizeBytes.toString());
+    const fileSize = Number(file.sizeBytes);
     reply.type(file.mimeType ?? "application/octet-stream");
+    const range = parseRangeHeader(request.headers.range, fileSize);
+    if (range === null) {
+      reply.header("Content-Range", `bytes */${fileSize}`);
+      return reply.code(416).send();
+    }
+    if (range) {
+      reply.header("Content-Length", String(range.end - range.start + 1));
+      reply.header("Content-Range", `bytes ${range.start}-${range.end}/${fileSize}`);
+      return reply.code(206).send(fs.createReadStream(target, range));
+    }
+    reply.header("Content-Length", file.sizeBytes.toString());
     return fs.createReadStream(target);
   });
 
   app.post<{ Body: CreateMediaFileDto; Reply: ApiResp<MediaFileDto> }>("/api/files", async (request, reply) => {
     const buffer = Buffer.from(request.body.contentBase64, "base64");
-    const inspection = inspectFileBuffer(buffer);
+    const inspection = declaredMediaInspection(request.body, inspectFileBuffer(buffer));
     if (isImageUploadRequest(request.body, inspection) && !isCommonImageInspection(inspection)) {
       return reply.code(400).send({ success: false, message: `上传图片仅支持 ${commonImageFormatText()} 常见图片格式` });
     }

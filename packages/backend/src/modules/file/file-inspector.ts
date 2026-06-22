@@ -11,8 +11,12 @@ export interface FileInspection {
 }
 
 export const COMMON_IMAGE_FORMATS = ["png", "jpg", "gif", "webp"] as const;
+export const COMMON_VIDEO_FORMATS = ["mp4", "webm", "mov"] as const;
+export const COMMON_AUDIO_FORMATS = ["mp3", "wav", "ogg", "flac", "m4a"] as const;
 
 const COMMON_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const COMMON_VIDEO_MIME_TYPES = new Set(["video/mp4", "video/webm", "video/quicktime"]);
+const COMMON_AUDIO_MIME_TYPES = new Set(["audio/mpeg", "audio/wav", "audio/ogg", "audio/flac", "audio/mp4"]);
 
 export function commonImageFormatText() {
   return COMMON_IMAGE_FORMATS.join("、");
@@ -20,6 +24,37 @@ export function commonImageFormatText() {
 
 export function isCommonImageInspection(inspection: FileInspection) {
   return COMMON_IMAGE_MIME_TYPES.has(inspection.mimeType) && COMMON_IMAGE_FORMATS.includes(inspection.format as (typeof COMMON_IMAGE_FORMATS)[number]);
+}
+
+export function isCommonVideoInspection(inspection: FileInspection) {
+  return COMMON_VIDEO_MIME_TYPES.has(inspection.mimeType) && COMMON_VIDEO_FORMATS.includes(inspection.format as (typeof COMMON_VIDEO_FORMATS)[number]);
+}
+
+export function isCommonAudioInspection(inspection: FileInspection) {
+  return COMMON_AUDIO_MIME_TYPES.has(inspection.mimeType) && COMMON_AUDIO_FORMATS.includes(inspection.format as (typeof COMMON_AUDIO_FORMATS)[number]);
+}
+
+function isoBaseMediaType(buffer: Buffer) {
+  if (buffer.length < 12 || buffer.subarray(4, 8).toString("ascii") !== "ftyp") return undefined;
+  const majorBrand = buffer.subarray(8, 12).toString("ascii").trim();
+  const compatibleBrands = buffer.subarray(16, Math.min(buffer.length, 128)).toString("ascii");
+  const brands = `${majorBrand} ${compatibleBrands}`;
+  if (majorBrand === "qt" || compatibleBrands.includes("qt  ")) return { mimeType: "video/quicktime", format: "mov" };
+  if (/\b(M4A |mp4a)\b/.test(brands)) return { mimeType: "audio/mp4", format: "m4a" };
+  return { mimeType: "video/mp4", format: "mp4" };
+}
+
+function ebmlMediaType(buffer: Buffer) {
+  if (!buffer.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))) return undefined;
+  const head = buffer.subarray(0, Math.min(buffer.length, 4096)).toString("latin1").toLowerCase();
+  if (head.includes("webm")) return { mimeType: "video/webm", format: "webm" };
+  if (head.includes("matroska")) return { mimeType: "video/x-matroska", format: "mkv" };
+  return undefined;
+}
+
+function isMp3FrameHeader(buffer: Buffer) {
+  if (buffer.length < 2) return false;
+  return buffer[0] === 0xff && (buffer[1]! & 0xe0) === 0xe0;
 }
 
 function jpegSize(buffer: Buffer) {
@@ -102,6 +137,60 @@ export function inspectFileBuffer(buffer: Buffer): FileInspection {
       mimeType: "image/webp",
       format: "webp",
       ...webpSize(buffer),
+    };
+  }
+
+  if (buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WAVE") {
+    return {
+      md5,
+      sizeBytes: buffer.length,
+      mimeType: "audio/wav",
+      format: "wav",
+    };
+  }
+
+  if (buffer.subarray(0, 3).toString("ascii") === "ID3" || isMp3FrameHeader(buffer)) {
+    return {
+      md5,
+      sizeBytes: buffer.length,
+      mimeType: "audio/mpeg",
+      format: "mp3",
+    };
+  }
+
+  if (buffer.subarray(0, 4).toString("ascii") === "OggS") {
+    return {
+      md5,
+      sizeBytes: buffer.length,
+      mimeType: "audio/ogg",
+      format: "ogg",
+    };
+  }
+
+  if (buffer.subarray(0, 4).toString("ascii") === "fLaC") {
+    return {
+      md5,
+      sizeBytes: buffer.length,
+      mimeType: "audio/flac",
+      format: "flac",
+    };
+  }
+
+  const isoMedia = isoBaseMediaType(buffer);
+  if (isoMedia) {
+    return {
+      md5,
+      sizeBytes: buffer.length,
+      ...isoMedia,
+    };
+  }
+
+  const ebmlMedia = ebmlMediaType(buffer);
+  if (ebmlMedia) {
+    return {
+      md5,
+      sizeBytes: buffer.length,
+      ...ebmlMedia,
     };
   }
 

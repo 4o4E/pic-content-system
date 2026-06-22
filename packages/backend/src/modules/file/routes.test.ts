@@ -211,6 +211,27 @@ describe("file routes", () => {
     expect(cachedResponse.body).toBe("");
   });
 
+  it("文件响应支持 range 分段读取", async () => {
+    const content = Buffer.from("0123456789");
+    const file = mediaFile({ md5: "f".repeat(32), storageKey: "objects/ff/ff/file.mp4", mimeType: "video/mp4", format: "mp4", sizeBytes: BigInt(content.length) });
+    writeStoredFile(file, content);
+    mockPrisma.mediaFile.findUnique.mockResolvedValue(file);
+    const app = await createFileOnlyApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/files/${file.md5}`,
+      headers: { range: "bytes=2-5" },
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(206);
+    expect(response.headers["accept-ranges"]).toBe("bytes");
+    expect(response.headers["content-range"]).toBe("bytes 2-5/10");
+    expect(response.headers["content-length"]).toBe("4");
+    expect(response.body).toBe("2345");
+  });
+
   it("声明为图片的上传只接受常见图片格式", async () => {
     const app = await createFileOnlyApp();
 
@@ -277,5 +298,37 @@ describe("file routes", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ success: true, data: { mimeType: "application/octet-stream", format: "bin" } });
     expect(mockStoreMediaFile).toHaveBeenCalled();
+  });
+
+  it("声明为视频的上传会保留媒体类型用于前端预览", async () => {
+    const file = mediaFile({
+      storageKey: "objects/aa/aa/file.mp4",
+      mimeType: "video/mp4",
+      format: "mp4",
+      sizeBytes: BigInt(10),
+      width: null,
+      height: null,
+    });
+    mockPrisma.$transaction.mockImplementation((callback) => callback({}));
+    mockStoreMediaFile.mockResolvedValue({
+      file,
+      inspection: { md5: file.md5, sizeBytes: 10, mimeType: "video/mp4", format: "mp4" },
+    });
+    const app = await createFileOnlyApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/files",
+      payload: {
+        contentBase64: Buffer.from("not-video-yet").toString("base64"),
+        mimeType: "video/mp4",
+        format: "mp4",
+      },
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ success: true, data: { mimeType: "video/mp4", format: "mp4" } });
+    expect(mockStoreMediaFile).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.any(Buffer), expect.objectContaining({ mimeType: "video/mp4", format: "mp4" }));
   });
 });

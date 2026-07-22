@@ -184,7 +184,7 @@ export async function registerPicRoutes(app: FastifyInstance, config: AppConfig)
   });
 
   app.get<{
-    Querystring: { tags?: string; tagMode?: "and" | "or"; type?: MediaType; scope?: string; visibility?: "all" };
+    Querystring: { tags?: string; tagMode?: "and" | "or"; type?: MediaType | "all"; scope?: string; visibility?: "all" };
     Reply: ApiResp<PicRandomResultDto>;
   }>("/api/pic/random", async (request, reply) => {
     const visibility = resolvePicVisibility(request.query);
@@ -193,9 +193,9 @@ export async function registerPicRoutes(app: FastifyInstance, config: AppConfig)
     const tagMode = request.query.tagMode ?? "and";
     const type = request.query.type ?? "image";
     const where: Prisma.MediaContentWhereInput = {
-      type,
       auditState: "approved",
     };
+    if (type !== "all") where.type = type;
     if (tags.length > 0) where.tags = tagMode === "or" ? { hasSome: tags } : { hasEvery: tags };
     await applyPicVisibilityFilter(where, visibility.data);
 

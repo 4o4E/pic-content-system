@@ -148,6 +148,34 @@ describe("pic routes", () => {
     });
   });
 
+  it("随机取图接口 type=all 时返回所有已审核内容类型", async () => {
+    mockPrisma.tagAlias.findMany.mockResolvedValue([]);
+    mockPrisma.mediaContent.count.mockResolvedValue(1);
+    mockPrisma.mediaContent.findMany.mockResolvedValue([contentRow({ id: "random-composite", type: "composite" })]);
+    const app = await createPicOnlyApp();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/pic/random?type=all",
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ success: true, data: { id: "random-composite", type: "composite" } });
+    expect(mockPrisma.mediaContent.count).toHaveBeenCalledWith({
+      where: {
+        auditState: "approved",
+      },
+    });
+    expect(mockPrisma.mediaContent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          auditState: "approved",
+        },
+      }),
+    );
+  });
+
   it("最新内容接口按创建时间倒序返回已审核内容", async () => {
     mockPrisma.tagAlias.findMany.mockResolvedValue([]);
     mockPrisma.mediaContent.count.mockResolvedValue(1);

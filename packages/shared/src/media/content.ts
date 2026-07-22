@@ -42,7 +42,7 @@ export interface PicRandomResultDto extends PicContentItemDto {}
 export interface PicRandomQueryDto {
   tags?: string[];
   tagMode?: "and" | "or";
-  type?: MediaType;
+  type?: MediaType | "all";
   scope?: string;
   visibility?: "all";
 }

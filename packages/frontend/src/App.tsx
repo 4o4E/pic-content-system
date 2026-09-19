@@ -5,6 +5,7 @@ import type {
   DataExportDetailDto,
   DataExportListItemDto,
   DataImportResultDto,
+  DailyMediaCountDto,
   IngestEventDto,
   MediaAssetDto,
   MediaAssetStatus,
@@ -64,6 +65,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { DailyNewChart } from "@/components/dashboard/daily-new-chart";
 import { Pagination } from "@/components/ui/pagination";
 import { createImagePreviewState, emptyImagePreviewState, ImagePreviewViewer, type ImagePreviewClosePayload, type ImagePreviewGroup, type ImagePreviewItem } from "@/components/media/image-preview";
 import { appBackLayerChangeEvent, closeLatestAppBackLayer, hasAppBackLayers, useAppBackLayer } from "@/lib/app-back-layer";
@@ -97,6 +99,7 @@ import {
   listAssets,
   listAudits,
   listDataExports,
+  listDailyNewMedia,
   listIngestEvents,
   listFileReferences,
   listMedia,
@@ -108,6 +111,7 @@ import {
   mergeTag,
   mergeMediaContents,
   rejectAudit,
+  recordTagSearch,
   renameTag,
   restoreMediaContentsToWorkspace,
   resetAudit,
@@ -207,6 +211,7 @@ const librarySortOptions: Array<{ label: string; value: LibrarySort }> = [
 ];
 
 const tagSortOptions: Array<{ label: string; value: TagSort }> = [
+  { label: "常用次数倒序", value: "usage_desc" },
   { label: "数量倒序", value: "count_desc" },
   { label: "数量正序", value: "count_asc" },
   { label: "创建时间倒序", value: "time_desc" },
@@ -861,6 +866,7 @@ function TagSelectInput({
   excludeTags = [],
   allowCreate = true,
   maxTags,
+  recordSearch = false,
 }: {
   label: string;
   selectedTags: string[];
@@ -874,17 +880,22 @@ function TagSelectInput({
   excludeTags?: string[];
   allowCreate?: boolean;
   maxTags?: number;
+  recordSearch?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [suggestions, setSuggestions] = useState<TagDto[]>([]);
+  const [searchCounts, setSearchCounts] = useState<Record<string, number>>({});
+  const [usageError, setUsageError] = useState("");
   const normalizedQuery = query.trim();
   const excludedTagSet = new Set(excludeTags);
   const effectiveSuggestions = staticSuggestions ?? suggestions;
+  const popularity = (tag: TagDto) => tag.addCount + (searchCounts[tag.name] ?? tag.searchCount);
   const visibleSuggestions = effectiveSuggestions
     .filter((tag) => !selectedTags.includes(tag.name) && !excludedTagSet.has(tag.name))
     .filter((tag) => !normalizedQuery || tagMatchesKeyword(tag, normalizedQuery))
+    .sort((left, right) => popularity(right) - popularity(left) || right.count - left.count || left.name.localeCompare(right.name, "zh-CN"))
     .slice(0, 8);
   const canCreate = allowCreate && parseTagInput(query).some((tag) => !selectedTags.includes(tag) && !excludedTagSet.has(tag));
 
@@ -902,13 +913,17 @@ function TagSelectInput({
 
     let ignore = false;
     setLoadingSuggestions(true);
-    listTags(normalizedQuery || undefined)
+    listTags(normalizedQuery || undefined, "usage_desc")
       .then((rows) => {
         if (ignore) return;
         setSuggestions(normalizedQuery ? rows.filter((tag) => tagMatchesKeyword(tag, normalizedQuery)) : rows);
+        setUsageError("");
       })
-      .catch(() => {
-        if (!ignore) setSuggestions([]);
+      .catch((cause: unknown) => {
+        if (!ignore) {
+          setSuggestions([]);
+          setUsageError(cause instanceof Error ? cause.message : "加载 tag 失败");
+        }
       })
       .finally(() => {
         if (!ignore) setLoadingSuggestions(false);
@@ -927,6 +942,15 @@ function TagSelectInput({
     const mergedTags = Array.from(new Set([...selectedTags, ...normalizedTags]));
     const next = maxTags ? mergedTags.slice(-maxTags) : mergedTags;
     onChange(next);
+    const added = next.filter((tag) => !selectedTags.includes(tag));
+    if (recordSearch && added.length > 0) {
+      void Promise.all(added.map(recordTagSearch))
+        .then((rows) => {
+          setSearchCounts((current) => ({ ...current, ...Object.fromEntries(rows.map((row) => [row.name, row.searchCount])) }));
+          setUsageError("");
+        })
+        .catch((cause: unknown) => setUsageError(cause instanceof Error ? cause.message : "记录 tag 搜索失败"));
+    }
     setQuery("");
     setOpen(true);
   }
@@ -993,13 +1017,15 @@ function TagSelectInput({
                 key={tag.name}
                 type="button"
                 className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-sm hover:bg-surface-muted"
-                onMouseDown={(event) => {
+                onPointerDown={(event) => {
                   event.preventDefault();
                   addTags([tag.name]);
                 }}
               >
                 <span>{tag.name}</span>
-                <span className="text-xs text-subtle-foreground">{tag.count}</span>
+                <span className="text-xs text-subtle-foreground" title={`添加 ${tag.addCount} 次，搜索 ${searchCounts[tag.name] ?? tag.searchCount} 次`}>
+                  常用 {popularity(tag)}
+                </span>
               </button>
             ))}
             {!loadingSuggestions && visibleSuggestions.length === 0 && !canCreate && (
@@ -1009,7 +1035,7 @@ function TagSelectInput({
               <button
                 type="button"
                 className="w-full rounded px-2 py-1.5 text-left text-sm text-primary-text hover:bg-primary-muted"
-                onMouseDown={(event) => {
+                onPointerDown={(event) => {
                   event.preventDefault();
                   commitQuery();
                 }}
@@ -1021,6 +1047,7 @@ function TagSelectInput({
         )}
       </div>
       {helperText && <div className={cn("mt-1 text-xs text-muted-foreground", inlineLabel && "col-start-2")}>{helperText}</div>}
+      {usageError && <div role="alert" className="mt-1 text-xs text-red-600 dark:text-red-400">{usageError}</div>}
     </div>
   );
 }
@@ -2344,6 +2371,7 @@ function ContentLibraryPage({
     gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${cardMinWidth}), 1fr))`,
   };
   const contentById = new Map(contents.map((content) => [content.id, content]));
+  const tagByName = new Map(tags.map((tag) => [tag.name, tag]));
   const selectedContents = selectedContentIds.map((id) => contentById.get(id)).filter((content): content is MediaContentDto => Boolean(content));
   const selectedContentTagCounts = selectedContents.reduce((counts, content) => {
     for (const tag of content.tags) counts.set(tag, (counts.get(tag) ?? 0) + 1);
@@ -2351,14 +2379,22 @@ function ContentLibraryPage({
   }, new Map<string, number>());
   const selectedContentTags = Array.from(selectedContentTagCounts.entries())
     .sort(([left], [right]) => left.localeCompare(right, "zh-CN"))
-    .map(([name, count]) => ({ name, count, aliases: [], visibility: "private" as const, scopes: [] }));
+    .map(([name, count]) => ({
+      name,
+      count,
+      addCount: tagByName.get(name)?.addCount ?? 0,
+      searchCount: tagByName.get(name)?.searchCount ?? 0,
+      aliases: [],
+      visibility: "private" as const,
+      scopes: [],
+    }));
   const tagsPresentOnEverySelectedContent = selectedContentTags.filter((tag) => tag.count === selectedContents.length).map((tag) => tag.name);
   const addableTags = tags.filter((tag) => !tagsPresentOnEverySelectedContent.includes(tag.name));
   const canMergeSelectedContents = selectedContentIds.length >= 2 || (selectedContentIds.length === 1 && selectedContents.some((content) => hasChatRecordElement(content.elements)));
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   useEffect(() => {
-    listTags()
+    listTags(undefined, "usage_desc")
       .then(setTags)
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载 tag 失败"));
   }, []);
@@ -2515,7 +2551,7 @@ function ContentLibraryPage({
       setSelectedContentIds([]);
       setPendingDeleteConfirm(false);
       await refreshContents();
-      setTags(await listTags());
+      setTags(await listTags(undefined, "usage_desc"));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "删除内容失败");
     }
@@ -2540,7 +2576,7 @@ function ContentLibraryPage({
       setSelectedContentIds([]);
       setError("");
       await refreshContents();
-      setTags(await listTags());
+      setTags(await listTags(undefined, "usage_desc"));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "合并内容失败");
     }
@@ -2560,7 +2596,7 @@ function ContentLibraryPage({
       setBatchAddTags("");
       setBatchRemoveTags("");
       await refreshContents();
-      setTags(await listTags());
+      setTags(await listTags(undefined, "usage_desc"));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "批量更新 tag 失败");
     }
@@ -2596,6 +2632,7 @@ function ContentLibraryPage({
               selectedTags={selectedTags}
               placeholder="输入 tag 名称搜索并选择"
               allowCreate={false}
+              recordSearch
               onChange={changeSelectedTags}
             />
             <div className="flex shrink-0 rounded-md border border-border bg-surface p-1">
@@ -2785,7 +2822,7 @@ function PicApiPreviewPage({ onOpenImagePreview, onTagSearch }: { onOpenImagePre
   }
 
   useEffect(() => {
-    listTags()
+    listTags(undefined, "usage_desc")
       .then(setTags)
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载 tag 失败"));
   }, []);
@@ -2874,6 +2911,7 @@ function PicApiPreviewPage({ onOpenImagePreview, onTagSearch }: { onOpenImagePre
             placeholder="输入 tag 名称筛选"
             suggestions={tags}
             allowCreate={false}
+            recordSearch
             onChange={setSelectedTags}
           />
           <label className="block">
@@ -3870,7 +3908,7 @@ function TagManagementPage({
           <span>Tag</span>
           <span>Alias</span>
           <span>可见性</span>
-          <span className="text-right">数量</span>
+          <span className="text-right">使用 / 添加 / 搜索</span>
           <span>创建时间</span>
           <span>操作</span>
         </div>
@@ -3929,9 +3967,10 @@ function TagManagementPage({
                     )
               )}
             </div>
-            <div className="flex items-center justify-between gap-3 md:block">
-              <span className="text-xs text-muted-foreground md:hidden">数量</span>
-              <span className="font-medium tabular-nums md:block md:text-right">{tag.count}</span>
+            <div className="flex flex-wrap justify-between gap-x-3 gap-y-1 tabular-nums md:block md:text-right">
+              <span className="text-xs md:block">使用 {tag.count}</span>
+              <span className="text-xs md:block">添加 {tag.addCount}</span>
+              <span className="text-xs md:block">搜索 {tag.searchCount}</span>
             </div>
             <div className="flex items-center justify-between gap-3 md:block">
               <span className="text-xs text-muted-foreground md:hidden">创建时间</span>
@@ -4788,77 +4827,18 @@ function DataExportsPage() {
   );
 }
 
-function DashboardPreview({ contents, events }: { contents: MediaContentDto[]; events: IngestEventDto[] }) {
-  return (
-    <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
-      <Card className="p-3 sm:p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-base font-semibold">内容库概览</h2>
-          <Badge>{contents.length} 条</Badge>
-        </div>
-        <div className="overflow-hidden rounded-md border border-border">
-          {contents.slice(0, 3).map((content) => (
-            <div key={content.id} className="grid gap-2 border-b border-border bg-surface px-3 py-2 text-sm last:border-b-0 hover:bg-surface-muted sm:grid-cols-[1fr_72px_72px_92px_72px] sm:items-center">
-              <span className="min-w-0 truncate font-medium">{content.title ?? "未命名内容"}</span>
-              <span className="text-muted-foreground">{content.type}</span>
-              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                <Heart className="h-3.5 w-3.5" />
-                {content.likeCount}
-              </span>
-              <span className={cn("text-xs", content.auditState === "approved" ? "text-green-600 dark:text-green-400" : "text-amber-600 dark:text-amber-400")}>{content.auditState}</span>
-              <span className="text-xs text-subtle-foreground sm:text-right">{content.tags.length} tags</span>
-            </div>
-          ))}
-        </div>
-      </Card>
-      <Card className="p-3 sm:p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-base font-semibold">接入事件</h2>
-          <Badge>{events.length} 条</Badge>
-        </div>
-        <div className="grid gap-3">
-          {events.map((event) => (
-            <div key={event.id} className="flex items-start gap-3 rounded-md border border-border bg-surface-muted p-3 text-sm">
-              <Clock3 className={cn("mt-0.5 h-4 w-4", event.status === "success" ? "text-green-500" : event.status === "failed" ? "text-red-500" : "text-subtle-foreground")} />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium">{event.source}</span>
-                  <span className="text-xs text-muted-foreground">{event.status}</span>
-                </div>
-                <p className="mt-1 text-xs text-subtle-foreground">{event.error ?? event.platformEventId ?? event.platform}</p>
-              </div>
-            </div>
-          ))}
-          {events.length === 0 && <div className="rounded-md border border-border bg-surface-muted p-3 text-sm text-muted-foreground">暂无接入事件。</div>}
-        </div>
-      </Card>
-    </div>
-  );
-}
-
-function HomePage({
-  stats,
-  contents,
-  events,
-}: {
-  stats: Array<{ label: string; value: string; icon: LucideIcon }>;
-  contents: MediaContentDto[];
-  events: IngestEventDto[];
-}) {
+function HomePage({ dailyNew, onPageChange }: { dailyNew: DailyMediaCountDto[]; onPageChange: (page: PageKey) => void }) {
   return (
     <section className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-4">
-        {stats.map(({ label, value, icon: Icon }) => (
-          <Card key={label} className="p-3 sm:p-4">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">{label}</span>
-              <Icon className="h-4 w-4 text-primary" />
-            </div>
-            <div className="mt-2 text-2xl font-semibold">{value}</div>
-          </Card>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
+        {pageItems.filter((item) => item.key !== "home").map(({ key, label, icon: Icon }) => (
+          <button key={key} type="button" onClick={() => onPageChange(key)} className="flex min-h-20 items-center gap-3 rounded-lg border border-border bg-surface px-4 text-left font-medium transition-colors hover:border-primary/50 hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+            <Icon className="h-5 w-5 shrink-0 text-primary" />
+            <span>{label}</span>
+          </button>
         ))}
       </div>
-      <DashboardPreview contents={contents} events={events} />
+      <DailyNewChart data={dailyNew} />
     </section>
   );
 }
@@ -4918,8 +4898,7 @@ export default function App() {
   const [page, setPage] = useState<PageKey>(() => pageFromPath(window.location.pathname));
   const [token, setToken] = useState(() => getStoredToken());
   const [assets, setAssets] = useState<MediaAssetDto[]>([]);
-  const [contents, setContents] = useState<MediaContentDto[]>([]);
-  const [events, setEvents] = useState<IngestEventDto[]>([]);
+  const [dailyNew, setDailyNew] = useState<DailyMediaCountDto[]>([]);
   const [draft, setDraft] = useState<WorkspaceDraftDto>(() => createEmptyDraft());
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [filters, setFilters] = useState<MediaFilters>(() => (pageFromPath(window.location.pathname) === "workspace" ? readWorkspaceFiltersFromUrl() : defaultMediaFilters));
@@ -4927,21 +4906,11 @@ export default function App() {
   const [imagePreview, setImagePreview] = useState(emptyImagePreviewState);
   const [mediaPreviewElement, setMediaPreviewElement] = useState<MediaElement | null>(null);
   const [pastingClipboard, setPastingClipboard] = useState(false);
-  const [pendingTotal, setPendingTotal] = useState(0);
-  const [contentTotal, setContentTotal] = useState(0);
-  const [eventTotal, setEventTotal] = useState(0);
   const [error, setError] = useState("");
   const openLayerHistoryActiveRef = useRef(false);
   const ignoringOpenLayerPopRef = useRef(false);
   const openLayerCleanupUrlRef = useRef("");
   const openLayerHistorySyncTimerRef = useRef<number | null>(null);
-
-  const stats: Array<{ label: string; value: string; icon: LucideIcon }> = [
-    { label: "待处理素材", value: String(pendingTotal), icon: Archive },
-    { label: "组装元素", value: String(draft.elements.length), icon: Layers3 },
-    { label: "正式内容", value: String(contentTotal), icon: CheckCircle2 },
-    { label: "接入事件", value: String(eventTotal), icon: ListChecks },
-  ];
 
   useEffect(() => {
     if (!token) return;
@@ -5067,8 +5036,7 @@ export default function App() {
     clearStoredToken();
     setToken("");
     setAssets([]);
-    setContents([]);
-    setEvents([]);
+    setDailyNew([]);
     setSelectedIds([]);
     setPendingAssetDeleteConfirm(false);
     setDraft(createEmptyDraft());
@@ -5085,9 +5053,15 @@ export default function App() {
     if (samePage) emitAppRouteChange();
   }
 
-  function openTagSearch(tag: string) {
+  async function openTagSearch(tag: string) {
     const name = tag.trim();
     if (!name) return;
+    try {
+      await recordTagSearch(name);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "记录 tag 搜索失败");
+      return;
+    }
     const params = new URLSearchParams({ q: name });
     const samePage = page === "tags";
     window.history.pushState(null, "", `${pagePaths.tags}?${params.toString()}`);
@@ -5095,9 +5069,15 @@ export default function App() {
     if (samePage) emitAppRouteChange();
   }
 
-  function openLibraryTag(tag: string) {
+  async function openLibraryTag(tag: string) {
     const name = tag.trim();
     if (!name) return;
+    try {
+      await recordTagSearch(name);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "记录 tag 搜索失败");
+      return;
+    }
     const params = new URLSearchParams({ tags: name });
     const samePage = page === "library";
     window.history.pushState(null, "", `${pagePaths.library}?${params.toString()}`);
@@ -5107,16 +5087,7 @@ export default function App() {
 
   async function refreshOverview() {
     try {
-      const [pendingPage, contentPage, eventPage] = await Promise.all([
-        listAssets({ status: "pending", size: 1 }),
-        listMedia({ size: 3 }),
-        listIngestEvents(1, 3),
-      ]);
-      setPendingTotal(pendingPage.total);
-      setContentTotal(contentPage.total);
-      setEventTotal(eventPage.total);
-      setContents(contentPage.data);
-      setEvents(eventPage.data);
+      setDailyNew(await listDailyNewMedia());
       setError("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "加载概览失败");
@@ -5396,7 +5367,7 @@ export default function App() {
       <div className="fixed inset-x-0 bottom-0 top-14 overflow-y-auto lg:left-60" data-app-scroll-container>
         <main className="flex min-h-full flex-col gap-3 px-3 py-3 sm:gap-4 sm:px-4 sm:py-4 lg:px-6 lg:pb-6">
           {error && <Card className="border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</Card>}
-          {page === "home" && <HomePage stats={stats} contents={contents} events={events} />}
+          {page === "home" && <HomePage dailyNew={dailyNew} onPageChange={changePage} />}
           {page === "workspace" && (
             <WorkspacePage
               assets={assets}

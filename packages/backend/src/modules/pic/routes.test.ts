@@ -552,6 +552,7 @@ describe("pic routes", () => {
       },
       tag: {
         createMany: vi.fn().mockResolvedValue({ count: 1 }),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
       sourceBinding: {
         findFirst: vi.fn().mockResolvedValue(undefined),
@@ -575,6 +576,7 @@ describe("pic routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ success: true, data: { existed: false, content: { auditState: "pending" }, file: { md5: file.md5 } } });
+    expect(tx.tag.updateMany).toHaveBeenCalledWith({ where: { name: { in: ["弔图"] } }, data: { addCount: { increment: 1 } } });
     expect(tx.mediaContent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         type: "image",
@@ -678,6 +680,7 @@ describe("pic routes", () => {
       },
       tag: {
         createMany: vi.fn().mockResolvedValue({ count: 1 }),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
       sourceBinding: {
         findFirst: vi.fn().mockResolvedValue(undefined),
@@ -714,6 +717,7 @@ describe("pic routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ success: true, data: { existed: false, content: { id: "qq-content", auditState: "pending" } } });
+    expect(tx.tag.updateMany).toHaveBeenCalledWith({ where: { name: { in: ["表情"] } }, data: { addCount: { increment: 1 } } });
     expect(tx.sourceBinding.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         contentId: "qq-content",
@@ -777,6 +781,7 @@ describe("pic routes", () => {
       },
       tag: {
         createMany: vi.fn().mockResolvedValue({ count: 2 }),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
       sourceBinding: {
         findFirst: vi.fn().mockResolvedValue({ id: "source-id" }),
@@ -800,6 +805,7 @@ describe("pic routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ success: true, data: { existed: true } });
+    expect(tx.tag.updateMany).toHaveBeenCalledWith({ where: { name: { in: ["弔图"] } }, data: { addCount: { increment: 1 } } });
     expect(tx.mediaContent.update).toHaveBeenCalledWith({
       where: { id: "existing-content" },
       data: { tags: ["旧tag", "弔图"], auditState: "approved" },

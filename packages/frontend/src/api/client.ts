@@ -21,6 +21,7 @@ import type {
   DataExportDetailDto,
   DataExportListItemDto,
   DataImportResultDto,
+  DailyMediaCountDto,
   IngestEventDto,
   ImportDataExportDto,
   LikeMediaContentResultDto,
@@ -73,7 +74,7 @@ export interface MediaQuery {
   size?: number;
 }
 
-export type TagSort = "count_desc" | "count_asc" | "time_desc" | "time_asc";
+export type TagSort = "count_desc" | "count_asc" | "usage_desc" | "time_desc" | "time_asc";
 
 export interface PicContentQuery {
   tags?: string[];
@@ -199,6 +200,10 @@ export function listMedia(query: MediaQuery = {}) {
   );
 }
 
+export function listDailyNewMedia() {
+  return request<DailyMediaCountDto[]>("/api/media/daily-new");
+}
+
 function picContentQuery(path: string, query: PicContentQuery = {}) {
   return withQuery(path, {
     tags: query.tags?.join(","),
@@ -276,6 +281,10 @@ export function restoreMediaContentsToWorkspace(body: BatchRestoreMediaContentsT
 
 export function listTags(q?: string, sort?: TagSort, visibility?: TagVisibilityFilter) {
   return request<TagDto[]>(withQuery("/api/tags", { q, sort, visibility: visibility === "all" ? undefined : visibility }));
+}
+
+export function recordTagSearch(name: string) {
+  return request<TagDto>(`/api/tags/${encodeURIComponent(name)}/search`, { method: "POST" });
 }
 
 export function createTag(body: UpsertTagDto) {

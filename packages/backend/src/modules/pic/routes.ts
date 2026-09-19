@@ -21,7 +21,7 @@ import { storeMediaFile } from "../file/file-storage.js";
 import { assetFileReferences, contentFileReferences, replaceMediaFileReferences } from "../file/file-reference-service.js";
 import { contentSign } from "../media/media-utils.js";
 import { toMediaAssetDto, toMediaContentDto, toMediaFileDto } from "../media/mapper.js";
-import { isValidTagScope, normalizeTagScope, resolveTagAliases, syncContentTags } from "../tag/tag-service.js";
+import { isValidTagScope, normalizeTagScope, recordAddedContentTags, resolveTagAliases, syncContentTags } from "../tag/tag-service.js";
 import { writeSourceBinding } from "../source/source-service.js";
 import { writeAuditEvent } from "../audit/audit-service.js";
 
@@ -324,6 +324,7 @@ export async function registerPicRoutes(app: FastifyInstance, config: AppConfig)
             },
           });
       await syncContentTags(tx, content.id, content.tags);
+      await recordAddedContentTags(tx, existing?.tags ?? [], content.tags);
       await writeSourceBinding(tx, content.id, elements, {
         ...source,
         fileId: source.fileId ?? file.md5,

@@ -65,3 +65,11 @@ export async function syncContentTags(tx: Prisma.TransactionClient, contentId: s
     });
   }
 }
+
+export async function recordAddedContentTags(tx: Prisma.TransactionClient, previousTags: string[], nextTags: string[]) {
+  const previous = new Set(previousTags);
+  const added = nextTags.filter((tag) => !previous.has(tag));
+  if (added.length === 0) return;
+  const result = await tx.tag.updateMany({ where: { name: { in: added } }, data: { addCount: { increment: 1 } } });
+  if (result.count !== added.length) throw new Error("新增 tag 统计失败");
+}

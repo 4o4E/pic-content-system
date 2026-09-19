@@ -18,7 +18,7 @@ import type {
 import { prisma } from "../../db/prisma.js";
 import { isValidTagScope, normalizeAlias, normalizeTagScopes, normalizeTags, resolveTagAliases, syncContentTags, tagScopeData } from "./tag-service.js";
 
-type TagSort = "count_desc" | "count_asc" | "time_desc" | "time_asc";
+type TagSort = "count_desc" | "count_asc" | "usage_desc" | "time_desc" | "time_asc";
 type TagVisibilityFilter = TagVisibility | "all";
 type TagScopePayloadResult = { ok: true; data: ReturnType<typeof tagScopeData> } | { ok: false; error: string };
 
@@ -32,13 +32,15 @@ function toTagAliasDto(row: { alias: string; tag: string; createdAt: Date; updat
 }
 
 function toTagDto(
-  row: { name: string; createdAt?: Date; visibility?: TagVisibility; scopes?: string[] },
+  row: { name: string; createdAt?: Date; visibility?: TagVisibility; scopes?: string[]; addCount?: number; searchCount?: number },
   count = 0,
   aliases: string[] = [],
 ): TagDto {
   return {
     name: row.name,
     count,
+    addCount: row.addCount ?? 0,
+    searchCount: row.searchCount ?? 0,
     aliases,
     visibility: row.visibility ?? "private",
     scopes: row.scopes ?? [],
@@ -47,7 +49,7 @@ function toTagDto(
 }
 
 function resolveTagSort(sort: string | undefined): TagSort {
-  return sort === "count_asc" || sort === "time_desc" || sort === "time_asc" ? sort : "count_desc";
+  return sort === "count_asc" || sort === "usage_desc" || sort === "time_desc" || sort === "time_asc" ? sort : "count_desc";
 }
 
 function resolveTagVisibilityFilter(visibility: string | undefined): TagVisibilityFilter {
@@ -60,6 +62,7 @@ function tagCreatedTime(value: string | undefined, fallback: number) {
 }
 
 function sortTagRows(left: TagDto, right: TagDto, sort: TagSort) {
+  if (sort === "usage_desc") return right.addCount + right.searchCount - left.addCount - left.searchCount || right.count - left.count || left.name.localeCompare(right.name, "zh-CN");
   if (sort === "count_asc") return left.count - right.count || left.name.localeCompare(right.name, "zh-CN");
   if (sort === "time_desc") return tagCreatedTime(right.createdAt, 0) - tagCreatedTime(left.createdAt, 0) || left.name.localeCompare(right.name, "zh-CN");
   if (sort === "time_asc") return tagCreatedTime(left.createdAt, Number.MAX_SAFE_INTEGER) - tagCreatedTime(right.createdAt, Number.MAX_SAFE_INTEGER) || left.name.localeCompare(right.name, "zh-CN");
@@ -162,6 +165,8 @@ export async function registerTagRoutes(app: FastifyInstance) {
       tagMap.set(row.tag, {
         name: row.tag,
         count: count.tag,
+        addCount: existing?.addCount ?? 0,
+        searchCount: existing?.searchCount ?? 0,
         aliases: [],
         visibility: existing?.visibility ?? "private",
         scopes: existing?.scopes ?? [],
@@ -194,6 +199,17 @@ export async function registerTagRoutes(app: FastifyInstance) {
       where: { name },
       create: { name, ...scopePayload.data },
       update: {},
+    });
+    return { success: true, message: "ok", data: toTagDto(row) };
+  });
+
+  app.post<{ Params: { name: string }; Reply: ApiResp<TagDto> }>("/api/tags/:name/search", async (request, reply) => {
+    const [name] = await resolveTagAliases(prisma, [decodeURIComponent(request.params.name)]);
+    if (!name) return reply.code(400).send({ success: false, message: "tag 不能为空" });
+    const row = await prisma.tag.upsert({
+      where: { name },
+      create: { name, searchCount: 1 },
+      update: { searchCount: { increment: 1 } },
     });
     return { success: true, message: "ok", data: toTagDto(row) };
   });
@@ -271,6 +287,8 @@ export async function registerTagRoutes(app: FastifyInstance) {
           name: to,
           visibility: source?.visibility ?? "private",
           scopes: source?.scopes ?? [],
+          addCount: source?.addCount ?? 0,
+          searchCount: source?.searchCount ?? 0,
           createdAt: source?.createdAt,
         },
         update: {},
@@ -299,9 +317,14 @@ export async function registerTagRoutes(app: FastifyInstance) {
           name: to,
           visibility: source?.visibility ?? "private",
           scopes: source?.scopes ?? [],
+          addCount: source?.addCount ?? 0,
+          searchCount: source?.searchCount ?? 0,
           createdAt: source?.createdAt,
         },
-        update: {},
+        update: {
+          addCount: { increment: source?.addCount ?? 0 },
+          searchCount: { increment: source?.searchCount ?? 0 },
+        },
       });
       const changed = await replaceTagInContents(tx, from, to);
       await tx.tagAlias.updateMany({ where: { tag: from }, data: { tag: to } });

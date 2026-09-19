@@ -8,6 +8,7 @@ import type {
   BatchRestoreMediaContentsToWorkspaceResultDto,
   BatchUpdateMediaTagsDto,
   CreateMediaContentDto,
+  DailyMediaCountDto,
   MediaContentDto,
   MediaElement,
   MediaType,
@@ -20,7 +21,7 @@ import { prisma } from "../../db/prisma.js";
 import { nextSnowflakeId } from "../../lib/snowflake.js";
 import { contentSign, fileMd5FromElement, flattenChatRecordElements, inferContentType, normalizeIds } from "./media-utils.js";
 import { toMediaContentDto } from "./mapper.js";
-import { resolveTagAliases, syncContentTags } from "../tag/tag-service.js";
+import { recordAddedContentTags, resolveTagAliases, syncContentTags } from "../tag/tag-service.js";
 import { writeSourceBinding } from "../source/source-service.js";
 import { writeAuditEvent } from "../audit/audit-service.js";
 import { assetFileReferences, contentFileReferences, deleteMediaFileReferences, replaceMediaFileReferences } from "../file/file-reference-service.js";
@@ -34,6 +35,24 @@ function earliestDate(dates: Date[]) {
 }
 
 export async function registerMediaRoutes(app: FastifyInstance) {
+  app.get<{ Reply: ApiResp<DailyMediaCountDto[]> }>("/api/media/daily-new", async () => {
+    const rows = await prisma.$queryRaw<DailyMediaCountDto[]>`
+      SELECT to_char(days.day, 'YYYY-MM-DD') AS date, COUNT(contents.id)::integer AS count
+      FROM generate_series(
+        ((now() AT TIME ZONE 'Asia/Shanghai')::date - 29)::timestamp,
+        (now() AT TIME ZONE 'Asia/Shanghai')::date::timestamp,
+        interval '1 day'
+      ) AS days(day)
+      LEFT JOIN media_content AS contents
+        ON contents.created_at >= days.day AT TIME ZONE 'Asia/Shanghai'
+        AND contents.created_at < (days.day + interval '1 day') AT TIME ZONE 'Asia/Shanghai'
+        AND contents.audit_state = 'approved'
+      GROUP BY days.day
+      ORDER BY days.day
+    `;
+    return { success: true, message: "ok", data: rows };
+  });
+
   app.get<{
     Querystring: {
       q?: string;
@@ -160,6 +179,7 @@ export async function registerMediaRoutes(app: FastifyInstance) {
       });
 
       await syncContentTags(tx, row.id, tags);
+      await recordAddedContentTags(tx, existing?.tags ?? [], tags);
       await writeSourceBinding(tx, row.id, elements, request.body.source);
       await replaceMediaFileReferences(tx, "media_content", row.id, contentFileReferences(elements));
       await writeAuditEvent(tx, {
@@ -193,12 +213,14 @@ export async function registerMediaRoutes(app: FastifyInstance) {
   app.put<{ Params: { id: string }; Body: UpdateMediaTagsDto; Reply: ApiResp<MediaContentDto> }>("/api/media/:id/tags", async (request, reply) => {
     const content = await prisma.$transaction(async (tx) => {
       const tags = await resolveTagAliases(tx, request.body.tags);
+      const previous = await tx.mediaContent.findUnique({ where: { id: request.params.id } });
+      if (!previous) return undefined;
       const row = await tx.mediaContent.update({
         where: { id: request.params.id },
         data: { tags },
-      }).catch(() => undefined);
-      if (!row) return undefined;
+      });
       await syncContentTags(tx, row.id, tags);
+      await recordAddedContentTags(tx, previous.tags, tags);
       return row;
     });
     if (!content) return reply.code(404).send({ success: false, message: "内容不存在" });
@@ -218,6 +240,7 @@ export async function registerMediaRoutes(app: FastifyInstance) {
         data: { tags },
       });
       await syncContentTags(tx, updated.id, tags);
+      await recordAddedContentTags(tx, row.tags, tags);
       return updated;
     });
     if (!content) return reply.code(404).send({ success: false, message: "内容不存在" });
@@ -241,6 +264,7 @@ export async function registerMediaRoutes(app: FastifyInstance) {
           data: { tags: nextTags },
         });
         await syncContentTags(tx, row.id, nextTags);
+        await recordAddedContentTags(tx, content.tags, nextTags);
         updated.push(row);
       }
       return updated;

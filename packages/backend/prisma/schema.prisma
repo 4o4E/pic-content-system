@@ -183,11 +183,13 @@ model WorkspaceDraft {
 }
 
 model Tag {
-  name       String        @id
-  visibility TagVisibility @default(private)
-  scopes     String[]      @default([])
-  createdAt  DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt  DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  name        String        @id
+  visibility  TagVisibility @default(private)
+  scopes      String[]      @default([])
+  addCount    Int           @default(0) @map("add_count")
+  searchCount Int           @default(0) @map("search_count")
+  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([visibility])
   @@map("tag")

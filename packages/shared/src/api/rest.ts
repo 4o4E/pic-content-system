@@ -5,9 +5,16 @@ export interface AuthSessionDto {
   ok: boolean;
 }
 
+export interface DailyMediaCountDto {
+  date: string;
+  count: number;
+}
+
 export interface TagDto {
   name: string;
   count: number;
+  addCount: number;
+  searchCount: number;
   aliases?: string[];
   visibility: TagVisibility;
   scopes: string[];

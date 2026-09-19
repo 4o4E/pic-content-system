@@ -175,6 +175,7 @@ describe("media routes", () => {
       },
       tag: {
         createMany: vi.fn().mockResolvedValue({ count: 1 }),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
       mediaFileReference: mediaFileReferenceDelegate(),
     };
@@ -220,12 +221,16 @@ describe("media routes", () => {
         reason: "提交审核",
       }),
     });
+    expect(tx.tag.updateMany).toHaveBeenCalledWith({ where: { name: { in: ["聊天记录"] } }, data: { addCount: { increment: 1 } } });
   });
 
   it("PUT tags 替换完整 tag 集合", async () => {
     const tx = {
       tagAlias: { findMany: vi.fn().mockResolvedValue([{ alias: "dt", tag: "弔图" }]) },
-      mediaContent: { update: vi.fn().mockResolvedValue(contentRow({ tags: ["弔图"] })) },
+      mediaContent: {
+        findUnique: vi.fn().mockResolvedValue(contentRow({ tags: ["弔图"] })),
+        update: vi.fn().mockResolvedValue(contentRow({ tags: ["弔图"] })),
+      },
       contentTag: {
         deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
         createMany: vi.fn().mockResolvedValue({ count: 1 }),
@@ -259,6 +264,7 @@ describe("media routes", () => {
       },
       tag: {
         createMany: vi.fn().mockResolvedValue({ count: 2 }),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
       mediaFileReference: mediaFileReferenceDelegate(),
     };
@@ -274,6 +280,7 @@ describe("media routes", () => {
     await app.close();
 
     expect(response.json()).toMatchObject({ success: true, data: { tags: ["保留", "新tag"] } });
+    expect(tx.tag.updateMany).toHaveBeenCalledWith({ where: { name: { in: ["新tag"] } }, data: { addCount: { increment: 1 } } });
   });
 
   it("按请求顺序合并内容并删除原内容", async () => {

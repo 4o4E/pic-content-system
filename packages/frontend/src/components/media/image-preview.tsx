@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Ellipsis, RefreshCcw, RotateCcw, RotateCw, ZoomIn, ZoomOut } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Copy, Download, Ellipsis, RefreshCcw, RotateCcw, RotateCw, Share2, X, ZoomIn, ZoomOut } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { createPortal } from "react-dom";
 import { useAppBackLayer } from "@/lib/app-back-layer";
@@ -81,6 +81,8 @@ const panEdgeTolerance = 18;
 const swipeActivationDistance = 14;
 const swipeAnimationMs = 220;
 const swipeDominanceRatio = 1.25;
+const longPressDelayMs = 550;
+const longPressMoveTolerance = 10;
 
 export const emptyImagePreviewState: ImagePreviewState = {
   visible: false,
@@ -250,8 +252,18 @@ function canSwipeNavigate(transform: ImageTransform, imageSize: ImageSize, viewp
   return deltaX > 0 ? transform.x >= bounds.maxX - panEdgeTolerance : transform.x <= bounds.minX + panEdgeTolerance;
 }
 
-function createInitialTransform(imageSize: ImageSize, viewportSize: ImageSize): ImageTransform {
-  const scale = clamp(widthFitScale(imageSize, viewportSize), absoluteMinScale, maxScale);
+export function createInitialTransform(imageSize: ImageSize, viewportSize: ImageSize): ImageTransform {
+  const isLongImage = imageSize.height > imageSize.width * 4;
+  const desktop = viewportSize.width >= 640;
+  const fitViewport = {
+    width: Math.max(viewportSize.width - (desktop ? 120 : 24), 1),
+    height: Math.max(viewportSize.height - (desktop ? 160 : 128), 1),
+  };
+  const scale = clamp(
+    isLongImage ? widthFitScale(imageSize, viewportSize) : Math.min(widthFitScale(imageSize, fitViewport), heightFitScale(imageSize, fitViewport)),
+    absoluteMinScale,
+    maxScale,
+  );
   const nextTransform = {
     x: 0,
     y: 0,
@@ -260,10 +272,10 @@ function createInitialTransform(imageSize: ImageSize, viewportSize: ImageSize): 
   };
   const bounds = panBounds(imageSize, viewportSize, nextTransform);
 
-  // 宽度贴屏是默认状态；长图从顶部开始，后续单指拖动按滚动边界约束。
+  // 只有高度超过宽度四倍的图片从顶部开始阅读；其他图片完整显示。
   return {
     ...nextTransform,
-    y: bounds.maxY > 0 ? bounds.maxY : 0,
+    y: isLongImage ? Math.max(bounds.maxY - (desktop ? 80 : 0), 0) : 0,
   };
 }
 
@@ -284,6 +296,10 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
   const [viewportSize, setViewportSize] = useState<ImageSize>({ width: 0, height: 0 });
   const [transform, setTransform] = useState<ImageTransform>({ x: 0, y: 0, scale: 1, rotation: 0 });
   const [mobileControlsVisible, setMobileControlsVisible] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState("");
+  const [longPressMenuVisible, setLongPressMenuVisible] = useState(false);
+  const [shareFile, setShareFile] = useState<File | null>(null);
+  const [shareError, setShareError] = useState("");
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isSwipeAnimating, setIsSwipeAnimating] = useState(false);
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -295,6 +311,8 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
   const tapClosePendingRef = useRef(false);
   const mouseGestureActiveRef = useRef(false);
   const swipeAnimationTimerRef = useRef<number | null>(null);
+  const longPressTimerRef = useRef<number | null>(null);
+  const longPressActivatedRef = useRef(false);
   const swipeOffsetRef = useRef(swipeOffset);
   const transformRef = useRef(transform);
   const activeGroup = state.groups?.[groupIndex];
@@ -320,11 +338,15 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
       if (swipeAnimationTimerRef.current !== null) {
         window.clearTimeout(swipeAnimationTimerRef.current);
       }
+      if (longPressTimerRef.current !== null) {
+        window.clearTimeout(longPressTimerRef.current);
+      }
     };
   }, []);
 
   const hideMobileControls = useCallback(() => {
     setMobileControlsVisible(false);
+    setCopyFeedback("");
   }, []);
 
   const applyTransform = useCallback((nextTransform: ImageTransform) => {
@@ -383,19 +405,47 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
   }, [groups, state.activeIndex, state.groupIndex, state.images, state.visible]);
 
   useEffect(() => {
+    if (!state.visible) setMobileControlsVisible(false);
+  }, [state.visible]);
+
+  useEffect(() => {
     pointersRef.current.clear();
     dragStartRef.current = null;
     pinchStartRef.current = null;
     tapStartRef.current = null;
     tapClosePendingRef.current = false;
-    setMobileControlsVisible(false);
     setSwipeOffset(0);
     setIsSwipeAnimating(false);
+    if (longPressTimerRef.current !== null) window.clearTimeout(longPressTimerRef.current);
+    longPressTimerRef.current = null;
+    longPressActivatedRef.current = false;
+    setLongPressMenuVisible(false);
+    setShareFile(null);
+    setShareError("");
     const image = imageRef.current;
     if (activeImage?.src && image?.complete) {
       updateImageSize(image, activeImage.src);
     }
   }, [activeImage?.src, groupIndex, safeActiveIndex, updateImageSize]);
+
+  useEffect(() => {
+    if (!longPressMenuVisible || !activeImage) return;
+    let cancelled = false;
+    setShareFile(null);
+    setShareError("");
+    fetch(activeImage.src)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`读取图片失败：${response.status}`);
+        const blob = await response.blob();
+        if (!blob.type.startsWith("image/")) throw new Error("图片格式无法分享");
+        const extension = blob.type.slice("image/".length).replace("+xml", "");
+        if (!cancelled) setShareFile(new File([blob], `image.${extension}`, { type: blob.type }));
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) setShareError(cause instanceof Error ? cause.message : "读取图片失败");
+      });
+    return () => { cancelled = true; };
+  }, [activeImage?.src, longPressMenuVisible]);
 
   useEffect(() => {
     if (!state.visible || !stageRef.current) return;
@@ -441,14 +491,13 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
       if (groups.length === 0) return;
       const next = Math.min(Math.max(groupIndex + offset, 0), groups.length - 1);
       if (next === groupIndex) return;
-      hideMobileControls();
       const nextImages = groups[next]?.images ?? [];
       const nextActiveIndex = target === "last" ? Math.max(nextImages.length - 1, 0) : 0;
       applyInitialTransformForImage(nextImages[nextActiveIndex]);
       setGroupIndex(next);
       setActiveIndex(nextActiveIndex);
     },
-    [applyInitialTransformForImage, groupIndex, groups, hideMobileControls],
+    [applyInitialTransformForImage, groupIndex, groups],
   );
 
   const canNavigateImage = useCallback(
@@ -505,14 +554,14 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
   const navigateImage = useCallback(
     (offset: number) => {
       if (!canNavigateImage(offset)) return;
-      hideMobileControls();
+      if (swipeAnimationTimerRef.current !== null) return;
       if (viewportSize.width <= 0) {
         commitNavigateImage(offset);
         return;
       }
       animateSwipeOffset(offset > 0 ? -viewportSize.width : viewportSize.width, () => commitNavigateImage(offset));
     },
-    [animateSwipeOffset, canNavigateImage, commitNavigateImage, hideMobileControls, viewportSize.width],
+    [animateSwipeOffset, canNavigateImage, commitNavigateImage, viewportSize.width],
   );
 
   const stageCenter = useCallback(() => {
@@ -679,6 +728,8 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
 
   function handlePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     if (isPreviewControlTarget(event.target)) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    if (longPressMenuVisible) return;
     event.preventDefault();
     hideMobileControls();
     tapClosePendingRef.current = false;
@@ -689,9 +740,20 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
     if (pointersRef.current.size === 1) {
       tapStartRef.current = { point, target: event.target, time: Date.now() };
       setupDragStart();
+      if (event.pointerType === "touch" && event.target instanceof HTMLImageElement && event.target.dataset.imagePreviewImage) {
+        longPressTimerRef.current = window.setTimeout(() => {
+          longPressTimerRef.current = null;
+          longPressActivatedRef.current = true;
+          dragStartRef.current = null;
+          tapStartRef.current = null;
+          tapClosePendingRef.current = false;
+          setLongPressMenuVisible(true);
+        }, longPressDelayMs);
+      }
       return;
     }
 
+    cancelLongPress();
     tapStartRef.current = null;
     setSwipeOffset(0);
     swipeOffsetRef.current = 0;
@@ -701,8 +763,11 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
   function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
     if (!pointersRef.current.has(event.pointerId)) return;
     event.preventDefault();
+    if (longPressActivatedRef.current) return;
+    const point = pointFromEvent(event);
+    if (tapStartRef.current && pointDistance(point, tapStartRef.current.point) > longPressMoveTolerance) cancelLongPress();
     hideMobileControls();
-    pointersRef.current.set(event.pointerId, pointFromEvent(event));
+    pointersRef.current.set(event.pointerId, point);
 
     if (pointersRef.current.size >= 2 && pinchStartRef.current) {
       if (swipeOffsetRef.current !== 0) {
@@ -733,10 +798,19 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
   function handlePointerEnd(event: ReactPointerEvent<HTMLDivElement>) {
     if (!pointersRef.current.has(event.pointerId)) return;
     event.preventDefault();
+    cancelLongPress();
     const point = pointFromEvent(event);
     const isSinglePointerEnd = pointersRef.current.size === 1;
     pointersRef.current.delete(event.pointerId);
     releasePointer(event.currentTarget, event.pointerId);
+
+    if (longPressActivatedRef.current) {
+      longPressActivatedRef.current = false;
+      dragStartRef.current = null;
+      tapStartRef.current = null;
+      pinchStartRef.current = null;
+      return;
+    }
 
     if (isSinglePointerEnd) {
       finishSingleDrag(point);
@@ -750,8 +824,14 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
     }
   }
 
+  function cancelLongPress() {
+    if (longPressTimerRef.current !== null) window.clearTimeout(longPressTimerRef.current);
+    longPressTimerRef.current = null;
+  }
+
   function handleMouseDown(event: ReactMouseEvent<HTMLDivElement>) {
     if (pointersRef.current.size > 0 || isPreviewControlTarget(event.target)) return;
+    if (event.button !== 0) return;
     event.preventDefault();
     hideMobileControls();
     tapClosePendingRef.current = false;
@@ -789,7 +869,57 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
 
   function handleWheel(event: ReactWheelEvent<HTMLDivElement>) {
     event.preventDefault();
+    const horizontalDelta = event.shiftKey && event.deltaX === 0 ? event.deltaY : event.deltaX;
+    if (event.shiftKey || Math.abs(horizontalDelta) > Math.abs(event.deltaY)) {
+      if (horizontalDelta !== 0) {
+        hideMobileControls();
+        navigateImage(horizontalDelta > 0 ? 1 : -1);
+      }
+      return;
+    }
     zoomAt({ x: event.clientX, y: event.clientY }, event.deltaY < 0 ? 1.12 : 0.88);
+  }
+
+  async function copyImage() {
+    if (!activeImage) return false;
+    try {
+      const imageUrl = activeImage.src;
+      await navigator.clipboard.write([new ClipboardItem({
+        "image/png": (async () => {
+          const response = await fetch(imageUrl);
+          if (!response.ok) throw new Error(`读取图片失败：${response.status}`);
+          const blob = await response.blob();
+          if (blob.type === "image/png") return blob;
+          const bitmap = await createImageBitmap(blob);
+          const canvas = document.createElement("canvas");
+          canvas.width = bitmap.width;
+          canvas.height = bitmap.height;
+          canvas.getContext("2d")!.drawImage(bitmap, 0, 0);
+          bitmap.close();
+          return new Promise<Blob>((resolve, reject) => canvas.toBlob((png) => png ? resolve(png) : reject(new Error("转换图片失败")), "image/png"));
+        })(),
+      })]);
+      setCopyFeedback("已复制图片");
+      return true;
+    } catch (cause) {
+      setCopyFeedback(cause instanceof Error ? cause.message : "复制图片失败");
+      return false;
+    }
+  }
+
+  async function shareImage() {
+    if (!shareFile) return;
+    if (!navigator.canShare?.({ files: [shareFile] })) {
+      setShareError("当前浏览器无法分享图片文件");
+      return;
+    }
+    try {
+      await navigator.share({ files: [shareFile] });
+      setLongPressMenuVisible(false);
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "AbortError") return;
+      setShareError(cause instanceof Error ? cause.message : "分享图片失败");
+    }
   }
 
   useEffect(() => {
@@ -800,10 +930,10 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
       if (!handledKeys.includes(event.key)) return;
       event.preventDefault();
       if (event.key === "Escape") closePreview();
-      if (event.key === "ArrowLeft") navigateImage(-1);
-      if (event.key === "ArrowRight") navigateImage(1);
-      if (event.key === "PageUp") changeGroup(-1);
-      if (event.key === "PageDown") changeGroup(1);
+      if (event.key === "ArrowLeft") { hideMobileControls(); navigateImage(-1); }
+      if (event.key === "ArrowRight") { hideMobileControls(); navigateImage(1); }
+      if (event.key === "PageUp") { hideMobileControls(); changeGroup(-1); }
+      if (event.key === "PageDown") { hideMobileControls(); changeGroup(1); }
       if (event.key === "+" || event.key === "=") zoomFromCenter(1.18);
       if (event.key === "-" || event.key === "_") zoomFromCenter(0.82);
       if (event.key === "0") resetTransform();
@@ -813,7 +943,7 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [changeGroup, closePreview, navigateImage, resetTransform, rotateBy, state.visible, zoomFromCenter]);
+  }, [changeGroup, closePreview, hideMobileControls, navigateImage, resetTransform, rotateBy, state.visible, zoomFromCenter]);
 
   if (!state.visible || !activeImage) return null;
 
@@ -841,6 +971,9 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
       onMouseUp={handleMouseEnd}
       onWheel={handleWheel}
       onClick={handlePreviewClick}
+      onContextMenu={(event) => {
+        if (window.matchMedia("(pointer: coarse)").matches) event.preventDefault();
+      }}
     >
       {previewSlots.map((slot) => {
         const slotImageSize = imageSizes[slot.image.src] ?? null;
@@ -861,7 +994,7 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
               ref={slot.offset === 0 ? imageRef : undefined}
               data-image-preview-adjacent={slot.offset === 0 ? undefined : true}
               data-image-preview-image={slot.offset === 0 ? true : undefined}
-              className="pointer-events-none select-none"
+              className={slot.offset === 0 ? "pointer-events-auto select-none" : "pointer-events-none select-none"}
               style={{
                 height: slotImageSize ? `${slotImageSize.height}px` : "auto",
                 maxHeight: "none",
@@ -882,35 +1015,6 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
         );
       })}
 
-      {canChangeGroup && (
-        <div data-image-preview-controls className={`fixed left-1/2 top-3 z-[1215] max-w-[calc(100vw-5rem)] -translate-x-1/2 items-center gap-2 rounded-md bg-black/70 p-2 text-white shadow-lg ${controlsVisibilityClass}`}>
-          <button
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md hover:bg-white/10 disabled:opacity-40"
-            type="button"
-            title="上一条内容"
-            disabled={groupIndex === 0}
-            onClick={() => (activeImages.length === 1 ? navigateImage(-1) : changeGroup(-1))}
-          >
-            <ChevronsLeft className="h-4 w-4" />
-          </button>
-          <div className="min-w-0 px-1 text-center text-xs leading-5">
-            <div className="max-w-[50vw] truncate font-medium">{activeGroup?.label ?? `第 ${groupIndex + 1} 条内容`}</div>
-            <div className="text-white/70">
-              {groupIndex + 1} / {groups.length}
-            </div>
-          </div>
-          <button
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md hover:bg-white/10 disabled:opacity-40"
-            type="button"
-            title="下一条内容"
-            disabled={groupIndex >= groups.length - 1}
-            onClick={() => (activeImages.length === 1 ? navigateImage(1) : changeGroup(1))}
-          >
-            <ChevronsRight className="h-4 w-4" />
-          </button>
-        </div>
-      )}
-
       <button data-image-preview-controls className="fixed left-3 top-1/2 z-[1215] hidden h-11 w-11 -translate-y-1/2 items-center justify-center rounded-md bg-black/60 hover:bg-white/10 sm:flex" type="button" title="上一张图片" onClick={() => navigateImage(-1)}>
         <ChevronLeft className="h-6 w-6" />
       </button>
@@ -920,7 +1024,7 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
 
       <button
         data-image-preview-controls
-        className="fixed bottom-4 right-4 z-[1220] flex h-9 w-9 items-center justify-center rounded-full bg-black/45 text-white/85 shadow-md hover:bg-black/65 sm:hidden"
+        className="fixed bottom-4 left-1/2 z-[1220] flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full bg-black/45 text-white/85 shadow-md hover:bg-black/65 sm:hidden"
         type="button"
         title={mobileControlsVisible ? "隐藏工具" : "显示工具"}
         onClick={() => setMobileControlsVisible((visible) => !visible)}
@@ -928,7 +1032,17 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
         <Ellipsis className="h-4 w-4" />
       </button>
 
-      <div data-image-preview-controls className={`fixed bottom-3 left-1/2 z-[1215] w-max max-w-[calc(100vw-5rem)] -translate-x-1/2 flex-nowrap items-center justify-center gap-1 overflow-x-auto rounded-md bg-black/70 p-2 text-white shadow-lg ${controlsVisibilityClass}`}>
+      <div data-image-preview-controls className={`fixed bottom-14 left-1/2 z-[1215] w-[calc(100vw-1rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-1 rounded-md bg-black/70 p-2 text-white shadow-lg sm:bottom-3 sm:w-max sm:max-w-[calc(100vw-5rem)] sm:flex-nowrap ${controlsVisibilityClass}`}>
+        {canChangeGroup && (
+          <div className="flex w-full items-center justify-center gap-1 border-b border-white/20 pb-1 sm:w-auto sm:shrink-0 sm:border-b-0 sm:border-r sm:pb-0 sm:pr-1">
+            <button className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/10 disabled:opacity-40 sm:h-9 sm:w-9" type="button" title="上一条内容" disabled={groupIndex === 0} onClick={() => (activeImages.length === 1 ? navigateImage(-1) : changeGroup(-1))}><ChevronsLeft className="h-4 w-4" /></button>
+            <span className="text-xs text-white/75 sm:hidden">{groupIndex + 1}/{groups.length}</span>
+            <span className="hidden max-w-24 truncate text-xs text-white/75 sm:block" title={activeGroup?.label}>
+              {groupIndex + 1}/{groups.length} · {activeGroup?.label ?? `第 ${groupIndex + 1} 条内容`}
+            </span>
+            <button className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-white/10 disabled:opacity-40 sm:h-9 sm:w-9" type="button" title="下一条内容" disabled={groupIndex >= groups.length - 1} onClick={() => (activeImages.length === 1 ? navigateImage(1) : changeGroup(1))}><ChevronsRight className="h-4 w-4" /></button>
+          </div>
+        )}
         <button className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-white/10 sm:h-9 sm:w-9" type="button" title="缩小" onClick={() => zoomFromCenter(0.82)}>
           <ZoomOut className="h-4 w-4" />
         </button>
@@ -947,10 +1061,31 @@ export function ImagePreviewViewer({ state, onClose }: { state: ImagePreviewStat
         <a className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-white/10 sm:h-9 sm:w-9" title="下载" href={activeImage.downloadUrl ?? activeImage.src} download onClick={hideMobileControls}>
           <Download className="h-4 w-4" />
         </a>
+        <button className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-white/10 sm:h-9 sm:w-9" type="button" title="复制图片" onClick={() => void copyImage()}>
+          {copyFeedback === "已复制图片" ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+        </button>
+        <button className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-white/10 sm:hidden" type="button" title="分享与更多操作" onClick={() => setLongPressMenuVisible(true)}>
+          <Share2 className="h-4 w-4" />
+        </button>
         <div className="shrink-0 px-2 text-xs text-white/75">
           {safeActiveIndex + 1} / {activeImages.length}
         </div>
       </div>
+      {copyFeedback && <div role="status" className="fixed bottom-28 left-1/2 z-[1225] -translate-x-1/2 rounded-md bg-black/80 px-3 py-2 text-sm text-white sm:bottom-16">{copyFeedback}</div>}
+      {longPressMenuVisible && (
+        <div data-image-preview-controls className="fixed inset-0 z-[1230] flex items-end justify-center bg-black/40 p-3 sm:hidden" onClick={(event) => { if (event.target === event.currentTarget) setLongPressMenuVisible(false); }}>
+          <div className="w-full max-w-sm rounded-xl bg-surface-elevated p-3 text-foreground shadow-xl">
+            <div className="mb-2 flex items-center justify-between px-1">
+              <span className="text-sm font-medium">图片操作</span>
+              <button type="button" className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-surface-muted" aria-label="关闭图片操作菜单" onClick={() => setLongPressMenuVisible(false)}><X className="h-4 w-4" /></button>
+            </div>
+            <button type="button" className="flex h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm hover:bg-surface-muted" onClick={() => void copyImage().then((copied) => { if (copied) setLongPressMenuVisible(false); })}><Copy className="h-4 w-4" />复制图片</button>
+            <a className="flex h-11 w-full items-center gap-3 rounded-md px-3 text-sm hover:bg-surface-muted" href={activeImage.downloadUrl ?? activeImage.src} download onClick={() => setLongPressMenuVisible(false)}><Download className="h-4 w-4" />下载图片</a>
+            <button type="button" className="flex h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm hover:bg-surface-muted disabled:opacity-50" disabled={!shareFile || Boolean(shareError)} onClick={() => void shareImage()}><Share2 className="h-4 w-4" />{shareError ? "无法分享图片" : shareFile ? "分享图片" : "正在准备分享"}</button>
+            {shareError && <p role="alert" className="px-3 py-2 text-xs text-red-600 dark:text-red-400">{shareError}</p>}
+          </div>
+        </div>
+      )}
     </div>
   );
 

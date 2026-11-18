@@ -117,6 +117,8 @@ export interface DataExportListItemDto {
   name: string;
   note?: string;
   status: DataExportStatus;
+  source?: "manual" | "scheduled" | "upload";
+  backupCopy?: "copying" | "present" | "missing" | "unknown";
   schemaVersion: number;
   zipFileName: string;
   zipSizeBytes: number;

@@ -168,7 +168,7 @@ const pageItems: Array<{ key: PageKey; label: string; icon: LucideIcon }> = [
   { key: "events", label: "接入事件", icon: ListChecks },
   { key: "tags", label: "标签管理", icon: Tags },
   { key: "references", label: "引用管理", icon: Link2 },
-  { key: "exports", label: "导入导出", icon: FileArchive },
+  { key: "exports", label: "备份与恢复", icon: FileArchive },
 ];
 
 const statusOptions: Array<{ label: string; value: MediaAssetStatus | "all" }> = [
@@ -4437,7 +4437,7 @@ function FileReferencesPage({ onOpenImagePreview, onTagSearch }: { onOpenImagePr
 }
 
 function DataExportStatusBadge({ status }: { status: DataExportListItemDto["status"] }) {
-  const label = status === "ready" ? "已完成" : status === "running" ? "处理中" : "失败";
+  const label = status === "ready" ? "已生成" : status === "running" ? "处理中" : "失败";
   return (
     <Badge
       className={cn(
@@ -4451,6 +4451,13 @@ function DataExportStatusBadge({ status }: { status: DataExportListItemDto["stat
   );
 }
 
+const backupCopyLabels = {
+  copying: "复制中",
+  present: "副本已落盘",
+  missing: "副本未落盘",
+  unknown: "副本状态未知",
+};
+
 function DataExportProgress({ item }: { item: DataExportListItemDto }) {
   const writtenBytes = item.status === "running" ? item.zipTempSizeBytes ?? 0 : item.zipSizeBytes;
   const percent = item.progressPercent ?? (item.status === "ready" ? 100 : 0);
@@ -4460,7 +4467,7 @@ function DataExportProgress({ item }: { item: DataExportListItemDto }) {
       <div className="tabular-nums text-muted-foreground">{formatBytes(writtenBytes)}</div>
       {item.status === "running" && <div className="text-[11px] text-subtle-foreground">zip.tmp</div>}
       {showBar && (
-        <div className="flex w-32 items-center gap-2 sm:ml-auto sm:justify-end">
+        <div className="flex w-28 items-center gap-2 sm:ml-auto sm:justify-end">
           <div className="h-1.5 w-20 overflow-hidden rounded-full bg-surface-muted">
             <div className="h-full rounded-full bg-primary" style={{ width: `${Math.max(0, Math.min(100, percent))}%` }} />
           </div>
@@ -4540,13 +4547,13 @@ function DataExportsPage() {
   }
 
   useEffect(() => {
-    refreshExports().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载导出记录失败"));
+    refreshExports().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "加载备份列表失败"));
   }, []);
 
   useEffect(() => {
-    if (!items.some((item) => item.status === "running")) return;
+    if (!items.some((item) => item.status === "running" || item.backupCopy === "copying")) return;
     const timer = window.setInterval(() => {
-      refreshExports().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "刷新导出记录失败"));
+      refreshExports().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "刷新备份列表失败"));
     }, 3000);
     return () => window.clearInterval(timer);
   }, [items]);
@@ -4565,7 +4572,7 @@ function DataExportsPage() {
       setSelected(item);
       setResult(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "创建导出失败");
+      setError(cause instanceof Error ? cause.message : "创建备份失败");
     } finally {
       setBusy("");
     }
@@ -4580,7 +4587,7 @@ function DataExportsPage() {
       setSelected(item);
       setResult(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "上传导出包失败");
+      setError(cause instanceof Error ? cause.message : "上传备份失败");
     } finally {
       setBusy("");
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -4595,7 +4602,7 @@ function DataExportsPage() {
       setSelected(updated);
       setEditingId("");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "保存导出记录失败");
+      setError(cause instanceof Error ? cause.message : "保存归档失败");
     } finally {
       setBusy("");
     }
@@ -4614,7 +4621,7 @@ function DataExportsPage() {
       setResult(null);
       setPendingDeleteId("");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "删除导出记录失败");
+      setError(cause instanceof Error ? cause.message : "删除归档失败");
     } finally {
       setBusy("");
     }
@@ -4630,7 +4637,7 @@ function DataExportsPage() {
       link.click();
       link.remove();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "下载导出包失败");
+      setError(cause instanceof Error ? cause.message : "下载备份失败");
     } finally {
       setBusy("");
     }
@@ -4644,7 +4651,7 @@ function DataExportsPage() {
       setSelected(item);
       await refreshExports();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "应用导入失败");
+      setError(cause instanceof Error ? cause.message : "导入失败");
     } finally {
       setBusy("");
     }
@@ -4670,13 +4677,13 @@ function DataExportsPage() {
         <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
           <Button className="w-full sm:w-auto" onClick={() => void createExport()} disabled={!!busy}>
             <FileArchive className="h-4 w-4" />
-            {busy === "create" ? "导出中" : "新建导出"}
+            {busy === "create" ? "创建中" : "立即备份"}
           </Button>
           <Button className="w-full sm:w-auto" variant="secondary" onClick={() => fileInputRef.current?.click()} disabled={!!busy}>
             <Upload className="h-4 w-4" />
-            {busy === "upload" ? "上传中" : "上传 zip"}
+            {busy === "upload" ? "上传中" : "上传备份"}
           </Button>
-          <Button variant="ghost" className="h-9 w-9 px-0" aria-label="刷新导出列表" onClick={() => void refreshExports()} disabled={!!busy}>
+          <Button variant="ghost" className="h-9 w-9 px-0" aria-label="刷新备份列表" onClick={() => void refreshExports()} disabled={!!busy}>
             <RefreshCw className="h-4 w-4" />
           </Button>
           <input ref={fileInputRef} className="hidden" type="file" accept=".zip,application/zip" onChange={(event) => void uploadExport(event.target.files?.[0])} />
@@ -4684,7 +4691,7 @@ function DataExportsPage() {
         <Badge className="w-fit">{items.length} 个</Badge>
       </div>
       <Card className="overflow-hidden">
-        <div className="hidden grid-cols-[1.3fr_88px_84px_84px_132px_84px_148px_300px] items-center border-b border-border bg-surface-muted px-4 py-2 text-xs text-muted-foreground xl:grid">
+        <div className="hidden grid-cols-[minmax(0,1fr)_88px_64px_64px_112px_56px_132px_244px] items-center gap-3 border-b border-border bg-surface-muted px-4 py-2 text-xs text-muted-foreground xl:grid">
           <span>名称</span>
           <span>状态</span>
           <span className="text-right">数据库</span>
@@ -4700,7 +4707,7 @@ function DataExportsPage() {
             <div
               key={item.id}
               className={cn(
-                "grid gap-2 border-b border-border px-3 py-3 text-sm last:border-b-0 sm:px-4 xl:grid-cols-[1.3fr_88px_84px_84px_132px_84px_148px_300px] xl:items-center xl:gap-3",
+                "grid gap-2 border-b border-border px-3 py-3 text-sm last:border-b-0 sm:px-4 xl:grid-cols-[minmax(0,1fr)_88px_64px_64px_112px_56px_132px_244px] xl:items-center xl:gap-3",
                 selected?.id === item.id ? "bg-primary-muted/50" : "bg-surface hover:bg-surface-muted",
               )}
             >
@@ -4722,6 +4729,7 @@ function DataExportsPage() {
                 ) : (
                   <>
                     <div className="truncate font-medium">{item.name}</div>
+                    {item.source === "scheduled" && <div className="mt-1 text-xs text-muted-foreground">定时备份</div>}
                     <div className="mt-1 truncate text-xs text-subtle-foreground">{item.note || item.id}</div>
                   </>
                 )}
@@ -4729,6 +4737,9 @@ function DataExportsPage() {
               <div className="flex items-center justify-between gap-3 xl:block">
                 <span className="text-xs text-muted-foreground xl:hidden">状态</span>
                 <DataExportStatusBadge status={item.status} />
+                {item.status === "ready" && item.backupCopy && (
+                  <div className="text-xs text-muted-foreground xl:mt-1">{backupCopyLabels[item.backupCopy]}</div>
+                )}
               </div>
               <div className="flex items-center justify-between gap-3 xl:block">
                 <span className="text-xs text-muted-foreground xl:hidden">数据库</span>
@@ -4763,16 +4774,16 @@ function DataExportsPage() {
                     <Button className="h-8 w-full sm:w-auto" variant="secondary" onClick={() => void showDetail(item)} disabled={busy === `detail:${item.id}`}>
                       查看
                     </Button>
-                    <Button className="h-8 w-full sm:w-auto" variant="secondary" onClick={() => startEditing(item)}>
+                    <Button className="h-8 w-full sm:w-auto" variant="secondary" aria-label="编辑备份备注" onClick={() => startEditing(item)} disabled={item.status !== "ready" || item.backupCopy === "copying"}>
                       <Pencil className="h-4 w-4" />
                     </Button>
-                    <Button className="h-8 w-full sm:w-auto" variant="secondary" onClick={() => void downloadExport(item)} disabled={item.status !== "ready" || busy === `download:${item.id}`}>
+                    <Button className="h-8 w-full sm:w-auto" variant="secondary" aria-label="下载备份" onClick={() => void downloadExport(item)} disabled={item.status !== "ready" || busy === `download:${item.id}`}>
                       <Download className="h-4 w-4" />
                     </Button>
                     <Button className="h-8 w-full sm:w-auto" variant="secondary" onClick={() => void applyImport(item)} disabled={item.status !== "ready" || busy === `import:${item.id}`}>
-                      应用导入
+                      导入
                     </Button>
-                    <Button className="h-8 w-full sm:w-auto" variant={pendingDeleteId === item.id ? "danger" : "secondary"} onClick={() => void removeExport(item)} disabled={busy === `delete:${item.id}`}>
+                    <Button className="h-8 w-full sm:w-auto" variant={pendingDeleteId === item.id ? "danger" : "secondary"} onClick={() => void removeExport(item)} disabled={item.status === "running" || item.backupCopy === "copying" || busy === `delete:${item.id}`}>
                       <Trash2 className="h-4 w-4" />
                       {pendingDeleteId === item.id ? "确认" : "删除"}
                     </Button>
@@ -4782,7 +4793,7 @@ function DataExportsPage() {
             </div>
           );
         })}
-        {items.length === 0 && <div className="p-8 text-center text-sm text-muted-foreground">暂无导出记录。</div>}
+        {items.length === 0 && <div className="p-8 text-center text-sm text-muted-foreground">暂无备份。</div>}
       </Card>
       {selected && (
         <Card className="p-3 sm:p-4">
@@ -4790,6 +4801,7 @@ function DataExportsPage() {
             <div>
               <h2 className="text-base font-semibold">{selected.name}</h2>
               <div className="mt-1 text-xs text-subtle-foreground">{selected.zipFileName}</div>
+              {selected.note && <div className="mt-1 whitespace-pre-wrap break-words text-sm text-muted-foreground">{selected.note}</div>}
             </div>
             <div className="flex flex-wrap gap-2">
               <Badge>{selected.databaseRows} 行</Badge>

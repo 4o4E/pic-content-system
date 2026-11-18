@@ -15,6 +15,7 @@ import { Prisma } from "@prisma/client";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import * as yauzl from "yauzl";
 import type { AppConfig } from "../../config/env.js";
@@ -25,8 +26,12 @@ import { tagScopeData } from "../tag/tag-service.js";
 
 const SCHEMA_VERSION = 1;
 const MANIFEST_ENTRY = "manifest.json";
+const METADATA_ENTRY = "metadata.json";
+const ZIP_COMMENT_MAX_BYTES = 0xffff;
 const DB_ENTRY_PREFIX = "db/";
 const OBJECT_ENTRY_PREFIX = "objects/";
+const BACKUP_COPY_NAME = /^pic-content-backup-(\d{8}-\d{6})-([0-9A-Za-z_-]{1,64})\.zip$/;
+const pendingBackupCopies = new Set<string>();
 const tableNames = [
   "media_file",
   "media_content",
@@ -40,11 +45,13 @@ const tableNames = [
   "audit_event",
   "ingest_event",
 ] as const;
-const activeExportJobs = new Set<string>();
+const activeExportJobs = new Map<string, ExportSidecar>();
+const archiveMutations = new Map<string, Promise<unknown>>();
 
 type TableName = (typeof tableNames)[number];
 type ExportRecords = Record<TableName, unknown[]>;
 type ExportSidecar = DataExportDetailDto;
+type ExportZipMetadata = Omit<DataExportListItemDto, "zipFileName" | "zipSizeBytes" | "zipTempSizeBytes" | "progressPercent" | "durationSeconds" | "backupCopy">;
 
 interface ObjectEntry {
   storageKey: string;
@@ -239,9 +246,19 @@ export function dataExportZipPath(config: AppConfig, id: string) {
   return path.join(exportsRoot(config), `${id}.zip`);
 }
 
-function sidecarPath(config: AppConfig, id: string) {
+function legacySidecarPath(config: AppConfig, id: string) {
   assertSafeExportId(id);
   return path.join(exportsRoot(config), `${id}.json`);
+}
+
+async function readLegacyExportIndex(config: AppConfig, id: string): Promise<ExportSidecar | undefined> {
+  try {
+    const item = JSON.parse(await fs.promises.readFile(legacySidecarPath(config, id), "utf8")) as ExportSidecar | null;
+    return item?.id === id ? item : undefined;
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw cause;
+  }
 }
 
 async function ensureExportsRoot(config: AppConfig) {
@@ -257,20 +274,6 @@ function isInside(parent: string, child: string) {
   return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-async function writeJsonFile(file: string, value: unknown) {
-  await fs.promises.writeFile(file, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-}
-
-async function readSidecar(config: AppConfig, id: string): Promise<ExportSidecar | undefined> {
-  const file = sidecarPath(config, id);
-  try {
-    return JSON.parse(await fs.promises.readFile(file, "utf8")) as ExportSidecar;
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw cause;
-  }
-}
-
 async function fileSize(file: string) {
   try {
     const stat = await fs.promises.stat(file);
@@ -279,22 +282,6 @@ async function fileSize(file: string) {
     if ((cause as NodeJS.ErrnoException).code === "ENOENT") return 0;
     throw cause;
   }
-}
-
-async function recoverStaleSidecar(config: AppConfig, sidecar: ExportSidecar) {
-  if (sidecar.status !== "running" || activeExportJobs.has(sidecar.id)) return sidecar;
-  const failedAt = nowIso();
-  const { manifest: _manifest, ...sidecarIndex } = sidecar;
-  const failed: ExportSidecar = {
-    ...sidecarIndex,
-    status: "failed",
-    updatedAt: failedAt,
-    finishedAt: failedAt,
-    error: "导出任务被服务重启中断，请重新创建导出",
-  };
-  await fs.promises.rm(`${dataExportZipPath(config, sidecar.id)}.tmp`, { force: true }).catch(() => undefined);
-  await writeJsonFile(sidecarPath(config, sidecar.id), failed);
-  return failed;
 }
 
 async function withRuntimeStats(config: AppConfig, sidecar: ExportSidecar): Promise<ExportSidecar> {
@@ -330,6 +317,81 @@ async function withPackageManifest(config: AppConfig, sidecar: ExportSidecar): P
 function toListItem(item: ExportSidecar): DataExportListItemDto {
   const { manifest: _manifest, ...listItem } = item;
   return listItem;
+}
+
+function exportMetadata(item: ExportSidecar): ExportZipMetadata {
+  const {
+    manifest: _manifest,
+    zipFileName: _zipFileName,
+    zipSizeBytes: _zipSizeBytes,
+    zipTempSizeBytes: _zipTempSizeBytes,
+    progressPercent: _progressPercent,
+    durationSeconds: _durationSeconds,
+    backupCopy: _backupCopy,
+    ...metadata
+  } = item;
+  return metadata;
+}
+
+function zipMetadataLayout(metadata: ExportZipMetadata) {
+  const json = JSON.stringify(metadata);
+  if (json.length > ZIP_COMMENT_MAX_BYTES) return { entry: json };
+  const comment = json.replace(/[^\x20-\x7e]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  // ZIP 注释只能存 65535 字节。旧版元数据不受这个限制，超限时保存在同一包内。
+  return comment.length <= ZIP_COMMENT_MAX_BYTES ? { comment } : { entry: json };
+}
+
+function parseZipComment(comment: string): ExportZipMetadata | undefined {
+  const trimmed = comment.trim();
+  if (!trimmed) return undefined;
+  try {
+    return JSON.parse(trimmed) as ExportZipMetadata;
+  } catch {
+    return undefined;
+  }
+}
+
+function zipFileName(id: string) {
+  return `${id}.zip`;
+}
+
+function sidecarFromMetadata(id: string, metadata: ExportZipMetadata, stat: fs.Stats): ExportSidecar {
+  const finishedAt = metadata.finishedAt ?? stat.mtime.toISOString();
+  return {
+    id,
+    name: normalizeName(metadata.name, `导出 ${metadata.createdAt.slice(0, 19).replace("T", " ")}`),
+    note: metadata.note,
+    status: metadata.status,
+    source: metadata.source,
+    schemaVersion: metadata.schemaVersion,
+    zipFileName: zipFileName(id),
+    zipSizeBytes: stat.size,
+    databaseRows: metadata.databaseRows,
+    objectCount: metadata.objectCount,
+    objectSizeBytes: metadata.objectSizeBytes,
+    createdAt: metadata.createdAt,
+    updatedAt: metadata.finishedAt ? metadata.updatedAt : finishedAt,
+    finishedAt,
+    error: metadata.error,
+  };
+}
+
+function sidecarFromManifest(id: string, manifest: DataExportManifestDto, stat: fs.Stats): ExportSidecar {
+  const timestamp = stat.mtime.toISOString();
+  return {
+    id,
+    name: normalizeName(manifest.name, `导出 ${manifest.createdAt.slice(0, 19).replace("T", " ")}`),
+    status: "ready",
+    schemaVersion: manifest.schemaVersion,
+    zipFileName: zipFileName(id),
+    zipSizeBytes: stat.size,
+    databaseRows: databaseRows(manifest),
+    objectCount: manifest.objectCount,
+    objectSizeBytes: objectSizeBytes(manifest),
+    createdAt: manifest.createdAt,
+    updatedAt: timestamp,
+    finishedAt: timestamp,
+  };
 }
 
 async function readDatabaseRecords(): Promise<ExportRecords> {
@@ -539,11 +601,12 @@ function jsonl(records: unknown[]) {
   return records.map((record) => JSON.stringify(record)).join("\n") + (records.length > 0 ? "\n" : "");
 }
 
-async function writeZip(zipPath: string, records: ExportRecords, objects: ObjectEntry[], manifest: DataExportManifestDto) {
+async function writeZip(zipPath: string, records: ExportRecords, objects: ObjectEntry[], manifest: DataExportManifestDto, metadata: ExportZipMetadata) {
   await new Promise<void>((resolve, reject) => {
     const output = fs.createWriteStream(zipPath);
     // 媒体文件通常已压缩，zip 只负责打包，避免二次压缩拖慢全量导出。
-    const archive = archiver("zip", { zlib: { level: 0 } });
+    const { comment, entry } = zipMetadataLayout(metadata);
+    const archive = archiver("zip", { zlib: { level: 0 }, comment });
 
     output.on("close", resolve);
     output.on("error", reject);
@@ -551,6 +614,7 @@ async function writeZip(zipPath: string, records: ExportRecords, objects: Object
     archive.on("error", reject);
     archive.pipe(output);
     archive.append(`${JSON.stringify(manifest, null, 2)}\n`, { name: MANIFEST_ENTRY });
+    if (entry) archive.append(entry, { name: METADATA_ENTRY });
     for (const table of tableNames) {
       archive.append(jsonl(records[table]), { name: `${DB_ENTRY_PREFIX}${table}.jsonl` });
     }
@@ -561,40 +625,89 @@ async function writeZip(zipPath: string, records: ExportRecords, objects: Object
   });
 }
 
-export async function listDataExports(config: AppConfig): Promise<DataExportListItemDto[]> {
+async function readDataExports(config: AppConfig): Promise<DataExportListItemDto[]> {
   await ensureExportsRoot(config);
   const files = await fs.promises.readdir(exportsRoot(config));
   const items: DataExportListItemDto[] = [];
   for (const file of files) {
-    if (!file.endsWith(".json")) continue;
-    const id = file.slice(0, -".json".length);
-    const sidecar = await readSidecar(config, id)
-      .then((item) => (item ? recoverStaleSidecar(config, item) : undefined))
+    if (!file.endsWith(".zip")) continue;
+    const id = file.slice(0, -".zip".length);
+    if (!/^[0-9A-Za-z_-]{1,64}$/.test(id)) continue;
+    const sidecar = await readSidecarFromZip(config, id)
       .then((item) => (item ? withRuntimeStats(config, item) : undefined))
       .catch(() => undefined);
     if (sidecar) items.push(toListItem(sidecar));
   }
+  for (const sidecar of activeExportJobs.values()) {
+    items.push(toListItem(await withRuntimeStats(config, sidecar)));
+  }
+  return items;
+}
+
+async function readBackupCopies(directory: string, onlyId?: string) {
+  const root = path.resolve(process.cwd(), directory);
+  const entries = await fs.promises.readdir(root, { withFileTypes: true }).catch((cause: unknown) => {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw cause;
+  });
+  const copies = new Map<string, Array<{ file: string; createdAt: number }>>();
+  const unchecked = new Set<string>();
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const [, timestamp, id] = BACKUP_COPY_NAME.exec(entry.name) ?? [];
+    if (!timestamp || !id || (onlyId && onlyId !== id)) continue;
+    const file = path.join(root, entry.name);
+    const createdAt = await backupCopyCreatedAt(file, id, timestamp);
+    if (createdAt === "unchecked") {
+      unchecked.add(id);
+      continue;
+    }
+    if (createdAt === undefined) continue;
+    const existing = copies.get(id);
+    const copy = { file, createdAt };
+    if (existing) existing.push(copy);
+    else copies.set(id, [copy]);
+  }
+  return { copies, unchecked };
+}
+
+async function readBackupCopyStatus(config: AppConfig, id?: string) {
+  const copying = new Set(pendingBackupCopies);
+  const scanned = await (config.scheduledBackup && readBackupCopies(config.scheduledBackup.directory, id).catch(() => undefined));
+  return <T extends DataExportListItemDto>(item: T): T => {
+    const present = scanned?.copies.has(item.id);
+    if (item.source !== "scheduled" && (item.source || !present)) return item;
+    const backupCopy = present ? "present" : copying.has(item.id) ? "copying" : !scanned || scanned.unchecked.has(item.id) ? "unknown" : "missing";
+    return { ...item, source: "scheduled", backupCopy };
+  };
+}
+
+export async function listDataExports(config: AppConfig): Promise<DataExportListItemDto[]> {
+  const rows = await readDataExports(config);
+  const items = rows.map(await readBackupCopyStatus(config));
   return items.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
 export async function getDataExport(config: AppConfig, id: string): Promise<DataExportDetailDto | undefined> {
-  const sidecar = await readSidecar(config, id);
-  return sidecar ? withPackageManifest(config, await recoverStaleSidecar(config, sidecar)) : undefined;
+  const sidecar = activeExportJobs.get(id) ?? (await readSidecarFromZip(config, id));
+  if (!sidecar) return undefined;
+  const withCopyStatus = await readBackupCopyStatus(config, id);
+  return withPackageManifest(config, withCopyStatus(sidecar));
 }
 
-async function createDataExportSidecar(config: AppConfig, input: CreateDataExportDto): Promise<ExportSidecar> {
+async function createDataExportSidecar(config: AppConfig, input: CreateDataExportDto, source: "manual" | "scheduled"): Promise<ExportSidecar> {
   await ensureExportsRoot(config);
   const id = nextSnowflakeId();
   const createdAt = nowIso();
-  const name = normalizeName(input.name, `全量导出 ${createdAt.slice(0, 19).replace("T", " ")}`);
-  const zipFileName = `${id}.zip`;
+  const name = normalizeName(input.name, `手动备份 ${createdAt.slice(0, 19).replace("T", " ")}`);
   const sidecar: ExportSidecar = {
     id,
     name,
     note: input.note,
     status: "running",
+    source,
     schemaVersion: SCHEMA_VERSION,
-    zipFileName,
+    zipFileName: zipFileName(id),
     zipSizeBytes: 0,
     databaseRows: 0,
     objectCount: 0,
@@ -602,23 +715,31 @@ async function createDataExportSidecar(config: AppConfig, input: CreateDataExpor
     createdAt,
     updatedAt: createdAt,
   };
-  await writeJsonFile(sidecarPath(config, id), sidecar);
   return sidecar;
 }
 
 export async function createDataExport(config: AppConfig, input: CreateDataExportDto): Promise<DataExportDetailDto> {
-  const sidecar = await createDataExportSidecar(config, input);
-  activeExportJobs.add(sidecar.id);
+  const sidecar = await createDataExportSidecar(config, input, "manual");
+  activeExportJobs.set(sidecar.id, sidecar);
   void runDataExportJob(config, sidecar);
   return withRuntimeStats(config, sidecar);
 }
 
-export async function createDataExportAndWait(config: AppConfig, input: CreateDataExportDto): Promise<DataExportDetailDto> {
-  const sidecar = await createDataExportSidecar(config, input);
-  activeExportJobs.add(sidecar.id);
-  const result = await runDataExportJob(config, sidecar);
-  if (result.status === "failed") throw new Error(result.error ?? "导出失败");
-  return withPackageManifest(config, result);
+export async function createScheduledDataExport<T>(
+  config: AppConfig,
+  input: CreateDataExportDto,
+  publish: (item: DataExportDetailDto) => Promise<T>,
+): Promise<T> {
+  const sidecar = await createDataExportSidecar(config, input, "scheduled");
+  activeExportJobs.set(sidecar.id, sidecar);
+  pendingBackupCopies.add(sidecar.id);
+  try {
+    const result = await runDataExportJob(config, sidecar);
+    if (result.status === "failed") throw new Error(result.error ?? "导出失败");
+    return await publish(result);
+  } finally {
+    pendingBackupCopies.delete(sidecar.id);
+  }
 }
 
 async function runDataExportJob(config: AppConfig, sidecar: ExportSidecar): Promise<ExportSidecar> {
@@ -637,17 +758,19 @@ async function runDataExportJob(config: AppConfig, sidecar: ExportSidecar): Prom
       objectSizeBytes: objects.reduce((sum, object) => sum + object.sizeBytes, 0),
       tables,
     };
-    await writeJsonFile(sidecarPath(config, sidecar.id), {
+    const prepared: ExportSidecar = {
       ...sidecar,
       databaseRows: databaseRows(manifest),
       objectCount: manifest.objectCount,
       objectSizeBytes: objectSizeBytes(manifest),
       updatedAt: nowIso(),
-    } satisfies ExportSidecar);
-    await writeZip(tempZip, records, objects, manifest);
+    };
+    activeExportJobs.set(sidecar.id, prepared);
+    const metadata: ExportZipMetadata = { ...exportMetadata(prepared), status: "ready" };
+    await writeZip(tempZip, records, objects, manifest, metadata);
     await fs.promises.rename(tempZip, zip);
     const stat = await fs.promises.stat(zip);
-    const finishedAt = nowIso();
+    const finishedAt = stat.mtime.toISOString();
     const ready: ExportSidecar = {
       ...sidecar,
       status: "ready",
@@ -658,7 +781,7 @@ async function runDataExportJob(config: AppConfig, sidecar: ExportSidecar): Prom
       updatedAt: finishedAt,
       finishedAt,
     };
-    await writeJsonFile(sidecarPath(config, sidecar.id), ready);
+    activeExportJobs.delete(sidecar.id);
     return ready;
   } catch (cause) {
     await fs.promises.rm(tempZip, { force: true }).catch(() => undefined);
@@ -670,34 +793,147 @@ async function runDataExportJob(config: AppConfig, sidecar: ExportSidecar): Prom
       finishedAt: failedAt,
       error: cause instanceof Error ? cause.message : "导出失败",
     };
-    await writeJsonFile(sidecarPath(config, sidecar.id), failed);
+    activeExportJobs.set(sidecar.id, failed);
     return failed;
-  } finally {
-    activeExportJobs.delete(sidecar.id);
   }
 }
 
+async function withArchiveMutation<T>(config: AppConfig, id: string, work: (zip: string) => Promise<T>): Promise<T> {
+  const zip = dataExportZipPath(config, id);
+  const previous = archiveMutations.get(zip);
+  const task = (async () => {
+    if (previous) await previous.catch(() => undefined);
+    return work(zip);
+  })();
+  archiveMutations.set(zip, task);
+  try {
+    return await task;
+  } finally {
+    if (archiveMutations.get(zip) === task) archiveMutations.delete(zip);
+  }
+}
+
+function isExportBusy(id: string) {
+  return activeExportJobs.get(id)?.status === "running" || pendingBackupCopies.has(id);
+}
+
+function assertExportIdle(id: string) {
+  if (isExportBusy(id)) throw Object.assign(new Error("备份正在生成或复制，请完成后再操作"), { statusCode: 409 });
+}
+
+async function persistArchiveMetadata(config: AppConfig, zip: string, item: ExportSidecar, legacy: ExportSidecar | undefined) {
+  await rewriteZipMetadata(zip, exportMetadata(item));
+  if (legacy) await fs.promises.rm(legacySidecarPath(config, item.id), { force: true });
+}
+
 export async function updateDataExport(config: AppConfig, id: string, input: UpdateDataExportDto): Promise<DataExportDetailDto | undefined> {
-  const sidecar = await readSidecar(config, id);
-  if (!sidecar) return undefined;
-  const { manifest: _manifest, ...sidecarIndex } = sidecar;
-  const updated: ExportSidecar = {
-    ...sidecarIndex,
-    name: normalizeName(input.name, sidecar.name),
-    note: input.note === undefined ? sidecar.note : input.note,
-    updatedAt: nowIso(),
-  };
-  await writeJsonFile(sidecarPath(config, id), updated);
-  return withPackageManifest(config, updated);
+  return withArchiveMutation(config, id, async (zip) => {
+    assertExportIdle(id);
+    const legacy = await readLegacyExportIndex(config, id);
+    const sidecar = await readSidecarFromZip(config, id, legacy ?? null);
+    if (!sidecar) return undefined;
+    const updated: ExportSidecar = {
+      ...sidecar,
+      name: normalizeName(input.name, sidecar.name),
+      note: input.note === undefined ? sidecar.note : input.note,
+      updatedAt: nowIso(),
+    };
+    await persistArchiveMetadata(config, zip, updated, legacy);
+    const withBackupStatus = await readBackupCopyStatus(config, id);
+    return withPackageManifest(config, withBackupStatus(updated));
+  });
+}
+
+async function removeDataExport(config: AppConfig, id: string, zip: string) {
+  activeExportJobs.delete(id);
+  await Promise.all([
+    fs.promises.rm(zip, { force: true }),
+    fs.promises.rm(`${zip}.tmp`, { force: true }),
+    fs.promises.rm(`${zip}.upload.tmp`, { force: true }),
+    fs.promises.rm(legacySidecarPath(config, id), { force: true }),
+  ]);
 }
 
 export async function deleteDataExport(config: AppConfig, id: string) {
-  await ensureExportsRoot(config);
-  await Promise.all([
-    fs.promises.rm(dataExportZipPath(config, id), { force: true }),
-    fs.promises.rm(`${dataExportZipPath(config, id)}.tmp`, { force: true }),
-    fs.promises.rm(sidecarPath(config, id), { force: true }),
-  ]);
+  await withArchiveMutation(config, id, async (zip) => {
+    assertExportIdle(id);
+    await removeDataExport(config, id, zip);
+  });
+}
+
+export async function openDataExportDownload(config: AppConfig, id: string) {
+  return withArchiveMutation(config, id, async (zip) => {
+    const active = activeExportJobs.get(id);
+    if (active && active.status !== "ready") return { status: "not-ready" } as const;
+    const legacy = await readLegacyExportIndex(config, id);
+    const sidecar = await readSidecarFromZip(config, id, legacy ?? null);
+    if (!sidecar) return { status: "missing" } as const;
+    if (sidecar.status !== "ready") return { status: "not-ready" } as const;
+    // 旧版备注只存在于旁置索引。下载前先把它写进 ZIP，迁移时只需要这一个文件。
+    if (legacy) await persistArchiveMetadata(config, zip, sidecar, legacy);
+    const file = await fs.promises.open(zip, "r");
+    try {
+      const { size } = await file.stat();
+      return { status: "ready", size, fileName: sidecar.zipFileName, stream: file.createReadStream() } as const;
+    } catch (cause) {
+      await file.close();
+      throw cause;
+    }
+  });
+}
+
+async function backupCopyCreatedAt(file: string, id: string, timestamp: string) {
+  try {
+    const metadata = await readMetadataFromZip(file);
+    if (metadata?.source) {
+      if (metadata.source === "scheduled" && metadata.id === id) return dateMs(metadata.createdAt) ?? "unchecked";
+      return undefined;
+    }
+    // 旧调度器在包内留下固定名称；单凭目录文件名和 ID 无法区分旧手动导出。
+    const manifest = await readManifestFromZip(file);
+    if (manifest.id === id && manifest.name === `定时备份 ${timestamp}`) return dateMs(manifest.createdAt) ?? "unchecked";
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== "ENOENT") return "unchecked";
+  }
+}
+
+export async function pruneScheduledDataExports(config: AppConfig, directory: string, keepId: string, cutoff: number) {
+  const { copies, unchecked } = await readBackupCopies(directory);
+  const items = await readDataExports(config);
+  const failures: unknown[] = [];
+
+  for (const item of items) {
+    const candidates = copies.get(item.id);
+    copies.delete(item.id);
+    if (item.id === keepId || isExportBusy(item.id) || unchecked.has(item.id)) continue;
+    if (!(Date.parse(item.createdAt) < cutoff) || (item.source && item.source !== "scheduled")) continue;
+    const targets = candidates?.filter((copy) => copy.createdAt < cutoff) ?? [];
+    if (item.source !== "scheduled" && !targets.length) continue;
+    try {
+      await withArchiveMutation(config, item.id, async (zip) => {
+        if (isExportBusy(item.id)) return;
+        const current = await readSidecarFromZip(config, item.id);
+        if (current && (!(Date.parse(current.createdAt) < cutoff) || (current.source && current.source !== "scheduled"))) return;
+        await removeDataExport(config, item.id, zip);
+        for (const { file } of targets) await removeCopy(file);
+      });
+    } catch (cause) {
+      failures.push(cause);
+    }
+  }
+  for (const [id, files] of copies) {
+    if (id === keepId || unchecked.has(id)) continue;
+    for (const { file, createdAt } of files) if (createdAt < cutoff) await removeCopy(file);
+  }
+
+  async function removeCopy(file: string) {
+    try {
+      await fs.promises.rm(file, { force: true });
+    } catch (cause) {
+      failures.push(cause);
+    }
+  }
+  if (failures.length) throw new AggregateError(failures, "清理过期自动备份失败");
 }
 
 function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
@@ -728,7 +964,7 @@ function normalizeZipError(cause: unknown) {
 }
 
 function openEntryStream(zipFile: yauzl.ZipFile, entry: yauzl.Entry) {
-  return new Promise<NodeJS.ReadableStream>((resolve, reject) => {
+  return new Promise<Readable>((resolve, reject) => {
     zipFile.openReadStream(entry, (error, stream) => {
       if (error) reject(error);
       else if (!stream) reject(new Error("无法读取 zip 条目"));
@@ -737,29 +973,140 @@ function openEntryStream(zipFile: yauzl.ZipFile, entry: yauzl.Entry) {
   });
 }
 
-export async function readManifestFromZip(zipPath: string): Promise<DataExportManifestDto> {
+async function readZipEntryBuffer(zipPath: string, entryName: string): Promise<Buffer | undefined> {
   const zipFile = await openZip(zipPath);
-  return new Promise<DataExportManifestDto>((resolve, reject) => {
+  return new Promise<Buffer | undefined>((resolve, reject) => {
+    let settled = false;
+    function finish(value: Buffer | undefined) {
+      if (settled) return;
+      settled = true;
+      zipFile.close();
+      resolve(value);
+    }
+    function fail(cause: unknown) {
+      if (settled) return;
+      settled = true;
+      zipFile.close();
+      reject(cause);
+    }
+
     zipFile.readEntry();
     zipFile.on("entry", (entry) => {
-      if (entry.fileName !== MANIFEST_ENTRY) {
+      if (entry.fileName !== entryName) {
         zipFile.readEntry();
         return;
       }
       openEntryStream(zipFile, entry)
         .then(streamToBuffer)
-        .then((buffer) => {
-          zipFile.close();
-          resolve(normalizeManifest(JSON.parse(buffer.toString("utf8"))));
-        })
-        .catch((cause) => {
-          zipFile.close();
-          reject(cause);
-        });
+        .then((buffer) => finish(buffer))
+        .catch(fail);
     });
-    zipFile.on("end", () => reject(new Error("导出包缺少 manifest.json")));
-    zipFile.on("error", (cause) => reject(normalizeZipError(cause)));
+    zipFile.on("end", () => finish(undefined));
+    zipFile.on("error", (cause) => fail(normalizeZipError(cause)));
   });
+}
+
+async function readZipComment(zipPath: string): Promise<string> {
+  const zipFile = await openZip(zipPath);
+  const comment = zipFile.comment;
+  zipFile.close();
+  return comment;
+}
+
+export async function readManifestFromZip(zipPath: string): Promise<DataExportManifestDto> {
+  const buffer = await readZipEntryBuffer(zipPath, MANIFEST_ENTRY);
+  if (!buffer) throw new Error("导出包缺少 manifest.json");
+  return normalizeManifest(JSON.parse(buffer.toString("utf8")));
+}
+
+async function readMetadataFromZip(zipPath: string): Promise<ExportZipMetadata | undefined> {
+  const metadata = parseZipComment(await readZipComment(zipPath));
+  if (metadata) return metadata;
+  const buffer = await readZipEntryBuffer(zipPath, METADATA_ENTRY);
+  return buffer ? parseZipComment(buffer.toString("utf8")) : undefined;
+}
+
+async function readSidecarFromZip(config: AppConfig, id: string, checkedLegacy?: ExportSidecar | null): Promise<ExportSidecar | undefined> {
+  assertSafeExportId(id);
+  const zip = dataExportZipPath(config, id);
+  const stat = await fs.promises.stat(zip).catch((cause) => {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw cause;
+  });
+  if (!stat?.isFile()) return undefined;
+  const metadata = await readMetadataFromZip(zip);
+  if (metadata?.id === id) return sidecarFromMetadata(id, metadata, stat);
+  const manifest = await readManifestFromZip(zip);
+  const fallback = sidecarFromManifest(id, manifest, stat);
+  const legacy = checkedLegacy === undefined ? await readLegacyExportIndex(config, id) : checkedLegacy;
+  const uploaded = manifest.id !== id;
+  return {
+    ...fallback,
+    source: uploaded ? "upload" : undefined,
+    name: normalizeName(legacy?.name, fallback.name),
+    note: legacy?.note ?? (typeof metadata?.note === "string" ? metadata.note : undefined),
+    createdAt: legacy?.createdAt ?? (uploaded ? fallback.updatedAt : fallback.createdAt),
+    updatedAt: legacy?.updatedAt ?? fallback.updatedAt,
+    finishedAt: legacy?.finishedAt ?? fallback.finishedAt,
+  };
+}
+
+async function rewriteZipEntries(sourceZipPath: string, targetZipPath: string, metadata: ExportZipMetadata, manifest?: DataExportManifestDto) {
+  const { comment, entry: metadataEntry } = zipMetadataLayout(metadata);
+  const zipFile = await openZip(sourceZipPath);
+  await new Promise<void>((resolve, reject) => {
+    const output = fs.createWriteStream(targetZipPath);
+    const archive = archiver("zip", { zlib: { level: 0 }, comment });
+    let settled = false;
+
+    function fail(cause: unknown) {
+      if (settled) return;
+      settled = true;
+      zipFile.close();
+      output.destroy();
+      reject(normalizeZipError(cause));
+    }
+
+    output.on("close", () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    });
+    output.on("error", fail);
+    archive.on("warning", fail);
+    archive.on("error", fail);
+    archive.pipe(output);
+    if (manifest) archive.append(`${JSON.stringify(manifest, null, 2)}\n`, { name: MANIFEST_ENTRY });
+    if (metadataEntry) archive.append(metadataEntry, { name: METADATA_ENTRY });
+
+    zipFile.readEntry();
+    zipFile.on("entry", (entry) => {
+      if (entry.fileName.endsWith("/") || entry.fileName === METADATA_ENTRY || (manifest && entry.fileName === MANIFEST_ENTRY)) {
+        zipFile.readEntry();
+        return;
+      }
+      openEntryStream(zipFile, entry)
+        .then((stream) => {
+          stream.on("end", () => zipFile.readEntry());
+          stream.on("error", fail);
+          archive.append(stream, { name: entry.fileName });
+        })
+        .catch(fail);
+    });
+    zipFile.on("end", () => { void archive.finalize().catch(fail); });
+    zipFile.on("error", fail);
+  });
+}
+
+async function rewriteZipMetadata(zipPath: string, metadata: ExportZipMetadata) {
+  const tempZip = `${zipPath}.rewrite-${process.pid}-${Date.now()}.tmp`;
+  try {
+    await rewriteZipEntries(zipPath, tempZip, metadata);
+    await fs.promises.rename(tempZip, zipPath);
+  } catch (cause) {
+    await fs.promises.rm(tempZip, { force: true }).catch(() => undefined);
+    throw cause;
+  }
 }
 
 export async function saveUploadedDataExport(
@@ -770,23 +1117,32 @@ export async function saveUploadedDataExport(
   const id = nextSnowflakeId();
   const zip = dataExportZipPath(config, id);
   const tempZip = `${zip}.upload.tmp`;
+  const normalizedZip = `${zip}.normalized.tmp`;
 
   try {
     await pipeline(input.stream, fs.createWriteStream(tempZip));
     if ((input.stream as NodeJS.ReadableStream & { truncated?: boolean }).truncated) {
       throw new Error("上传 zip 超过限制或传输被截断，请重新上传完整文件");
     }
-    const manifest = await readManifestFromZip(tempZip);
-    await fs.promises.rename(tempZip, zip);
-    const stat = await fs.promises.stat(zip);
+    const sourceManifest = await readManifestFromZip(tempZip);
+    const sourceMetadata = await readMetadataFromZip(tempZip);
     const createdAt = nowIso();
-    const sidecar: ExportSidecar = {
+    const name = normalizeName(
+      typeof sourceMetadata?.name === "string" ? sourceMetadata.name : sourceManifest.name,
+      sourceManifest.name || input.filename || `上传导出 ${createdAt.slice(0, 19).replace("T", " ")}`,
+    );
+    const manifest: DataExportManifestDto = {
+      ...sourceManifest,
       id,
-      name: normalizeName(manifest.name, input.filename || `上传导出 ${createdAt.slice(0, 19).replace("T", " ")}`),
+      name,
+    };
+    const metadata: ExportZipMetadata = {
+      id,
+      name,
+      note: typeof sourceMetadata?.note === "string" ? sourceMetadata.note : undefined,
+      source: "upload",
       status: "ready",
       schemaVersion: manifest.schemaVersion,
-      zipFileName: `${id}.zip`,
-      zipSizeBytes: stat.size,
       databaseRows: databaseRows(manifest),
       objectCount: manifest.objectCount,
       objectSizeBytes: objectSizeBytes(manifest),
@@ -794,10 +1150,14 @@ export async function saveUploadedDataExport(
       updatedAt: createdAt,
       finishedAt: createdAt,
     };
-    await writeJsonFile(sidecarPath(config, id), sidecar);
-    return { ...(await withRuntimeStats(config, sidecar)), manifest: { ...manifest, id, name: normalizeName(manifest.name, input.filename || "上传导出") } };
+    await rewriteZipEntries(tempZip, normalizedZip, metadata, manifest);
+    await fs.promises.rename(normalizedZip, zip);
+    await fs.promises.rm(tempZip, { force: true }).catch(() => undefined);
+    const stat = await fs.promises.stat(zip);
+    return withPackageManifest(config, sidecarFromMetadata(id, metadata, stat));
   } catch (cause) {
     await fs.promises.rm(tempZip, { force: true }).catch(() => undefined);
+    await fs.promises.rm(normalizedZip, { force: true }).catch(() => undefined);
     throw normalizeZipError(cause);
   }
 }
@@ -1239,7 +1599,7 @@ async function importDatabaseRecords(bundle: LoadedBundle, conflictPolicy: DataI
 }
 
 export async function importDataExport(config: AppConfig, id: string, input?: ImportDataExportDto): Promise<DataImportResultDto> {
-  const sidecar = await readSidecar(config, id);
+  const sidecar = await getDataExport(config, id);
   if (!sidecar) throw new Error("导出记录不存在");
   if (sidecar.status !== "ready") throw new Error("只能导入已完成的导出包");
   const conflictPolicy = importConflictPolicy(input);

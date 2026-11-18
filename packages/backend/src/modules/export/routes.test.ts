@@ -2,20 +2,11 @@ import Fastify from "fastify";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
-
-const mockService = vi.hoisted(() => ({
-  createDataExport: vi.fn(),
-  dataExportZipPath: vi.fn(),
-  deleteDataExport: vi.fn(),
-  getDataExport: vi.fn(),
-  importDataExport: vi.fn(),
-  listDataExports: vi.fn(),
-  saveUploadedDataExport: vi.fn(),
-  updateDataExport: vi.fn(),
-}));
-
-vi.mock("./export-service.js", () => mockService);
+import { pipeline } from "node:stream/promises";
+import archiver from "archiver";
+import { afterEach, describe, expect, it } from "vitest";
+import { dataExportZipPath, saveUploadedDataExport } from "./export-service.js";
+import { registerDataExportRoutes } from "./routes.js";
 
 const tempDirs: string[] = [];
 
@@ -27,45 +18,43 @@ async function makeTempDir() {
 
 describe("export routes", () => {
   afterEach(async () => {
-    vi.clearAllMocks();
     for (const dir of tempDirs.splice(0)) await fs.promises.rm(dir, { recursive: true, force: true });
   });
 
-  it("下载导出 zip 时返回真实 Content-Length", async () => {
+  it.each([
+    ["常规备注", "后来修改的名称", "从旧版迁移的备注"],
+    ["超长备注", "后来修改的名称", "备".repeat(11_000)],
+    ["超长名称", "名".repeat(11_000), "从旧版迁移的备注"],
+  ])("旧归档第一次下载和重新上传保留%s，不再需要旁置 JSON", async (_case, name, note) => {
     const dir = await makeTempDir();
-    const zip = path.join(dir, "export.zip");
-    const content = Buffer.from("zip-content");
-    await fs.promises.writeFile(zip, content);
-    mockService.getDataExport.mockResolvedValue({
-      id: "export-id",
-      name: "测试导出",
-      status: "ready",
-      schemaVersion: 1,
-      zipFileName: "export-id.zip",
-      zipSizeBytes: content.length,
-      databaseRows: 0,
-      objectCount: 0,
-      objectSizeBytes: 0,
-      createdAt: "2026-06-11T00:00:00.000Z",
-      updatedAt: "2026-06-11T00:00:00.000Z",
-    });
-    mockService.dataExportZipPath.mockReturnValue(zip);
-
-    const { registerDataExportRoutes } = await import("./routes.js");
+    const config = { port: 0, filesDir: dir, accessToken: "token", frontendDistDir: "not-exists", maxRequestBodyBytes: 1024 };
+    const id = "legacy-export";
+    const file = dataExportZipPath(config, id);
+    await fs.promises.mkdir(path.dirname(file), { recursive: true });
+    const createdAt = "2026-06-11T00:00:00.000Z";
+    const manifest = { id, name: "打包时的名称", schemaVersion: 1, createdAt, databaseRows: 0, objectCount: 0, objectSizeBytes: 0, tables: [] };
+    const zip = archiver("zip");
+    const written = pipeline(zip, fs.createWriteStream(file));
+    zip.append(JSON.stringify(manifest), { name: "manifest.json" });
+    await Promise.all([zip.finalize(), written]);
+    const sidecar = path.join(path.dirname(file), `${id}.json`);
+    await fs.promises.writeFile(sidecar, JSON.stringify({
+      ...manifest, name, note, status: "ready", updatedAt: createdAt, finishedAt: createdAt,
+    }));
     const app = Fastify();
-    await registerDataExportRoutes(app, {
-      port: 0,
-      filesDir: dir,
-      accessToken: "token",
-      frontendDistDir: "not-exists",
-      maxRequestBodyBytes: 1024,
-    });
-
-    const response = await app.inject({ method: "GET", url: "/api/exports/export-id/download" });
-    await app.close();
-
-    expect(response.statusCode).toBe(200);
-    expect(response.headers["content-length"]).toBe(String(content.length));
-    expect(response.body).toBe("zip-content");
+    try {
+      await registerDataExportRoutes(app, config);
+      const response = await app.inject({ method: "GET", url: `/api/exports/${id}/download` });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["content-length"]).toBe(String(response.rawPayload.length));
+      const downloaded = path.join(dir, "download.zip");
+      await fs.promises.writeFile(downloaded, response.rawPayload);
+      await expect(saveUploadedDataExport(config, { filename: "download.zip", stream: fs.createReadStream(downloaded) })).resolves.toMatchObject({
+        source: "upload", name, note,
+      });
+      await expect(fs.promises.stat(sidecar)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await app.close();
+    }
   });
 });

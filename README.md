@@ -15,7 +15,7 @@
 - 前端开发环境默认走 Vite `/api` 代理到后端，生产环境由后端托管前端 dist；需要覆盖外部 API 时配置 `VITE_API_BASE_URL`。
 - PostgreSQL 连接由 `DATABASE_URL` 指定，数据库账号、密码和库名直接写在连接串里。
 - 二进制文件存文件系统，文件 ID 使用 MD5，内容签名也使用 MD5。
-- 定时备份通过 `BACKUP_DIR` 和 `BACKUP_CRON` 启用，复用完整导出包格式。
+- 手动和定时备份使用同一种 ZIP 格式。定时任务通过 `BACKUP_DIR` 和 `BACKUP_CRON` 启用。
 - 已有旧数据导入脚本：`pnpm --filter @pic/backend import:old-pic`，来源目录按脚本内配置读取。
 - NapCat 群媒体导入脚本：`pnpm --filter @pic/backend import:napcat-export -- <导出目录>` 默认 dry-run；正式写入需要加 `--commit`，默认给内容加 `弔图` tag，可用 `--tag=xxx` 追加 tag。
 
@@ -26,6 +26,7 @@
 - `/library`：内容库。展示已入库内容，支持输入筛选 tag、AND / OR 多 tag 过滤、排序、卡片尺寸预设、分页、批量 tag 编辑、批量删除和放回工作台。
 - `/tags`：标签管理。用于查找 tag，查看当前使用数量、累计添加次数和累计搜索次数。
 - `/events`：接入事件记录。
+- `/exports`：备份与恢复。可立即备份、编辑备注、下载 ZIP、上传并导入；定时备份会单独显示副本是否已落盘。
 
 路由状态写入 URL 查询参数，刷新后不依赖 localStorage 恢复页面筛选状态。localStorage 只用于 token 和主题。
 
@@ -93,16 +94,20 @@ docker compose --env-file .env up -d --build
 
 默认访问地址为 `http://localhost:3000`。首次启动时容器会执行 `prisma migrate deploy`，通过 `RUN_MIGRATIONS=false` 可以关闭自动迁移。媒体文件存储在 Compose volume `media_files`，数据库存储在 `postgres_data`。
 
-### 定时备份
+### 备份与恢复
 
-后端可以按 cron 表达式自动创建完整导出包，并复制到 `BACKUP_DIR` 指定目录。未配置 `BACKUP_DIR` 时不启用；配置 `BACKUP_DIR` 时必须同时配置 `BACKUP_CRON`。cron 支持 5 段或带秒的 6 段表达式，例如每天 03:00：
+通过「立即备份」创建包含数据库业务记录和媒体文件的 ZIP。名称和备注存放在 ZIP 注释中，超出注释长度时存放在包内的 `metadata.json`，重新上传仍会保留。包内 `manifest.json` 是导入清单，搬运时只需保留原 ZIP。向已有实例导入时会合并数据，默认保留本地冲突记录，不会把实例回滚到备份时刻。
+
+旧版本如果把备注存在同名 JSON 中，新版本会在首次下载时把名称和备注迁入 ZIP。升级前请保留 ZIP 和同名 JSON；迁移后仅需保留 ZIP。
+
+配置 `BACKUP_DIR` 和 `BACKUP_CRON` 后，后端自动生成同样的 ZIP，并将副本写入 `BACKUP_DIR`。cron 支持 5 段，或带秒的 6 段，例如每天 03:00：
 
 ```env
 BACKUP_DIR=/data/backups
 BACKUP_CRON=0 3 * * *
 ```
 
-备份文件名格式为 `pic-content-backup-YYYYMMDD-HHmmss-<导出ID>.zip`。备份任务不会自动删除历史文件，需要保留策略时在备份目录侧单独配置清理任务。
+备份副本命名为 `pic-content-backup-YYYYMMDD-HHmmss-<归档ID>.zip`。每次定时备份副本落盘成功后，清理超过 14 天的自动归档及对应副本；本次备份失败时保留旧包。手动备份、上传的 ZIP 和无法确认为自动备份的旧文件不参与自动清理。在页面手动删除归档只删除应用内的 ZIP，独立副本仍按定时保留规则处理。
 
 Docker Compose 默认把容器内 `/data/backups` 挂到 `backup_files` volume。需要复制到宿主机指定目录时，在 `.env` 中设置：
 

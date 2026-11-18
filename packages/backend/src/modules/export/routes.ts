@@ -1,5 +1,4 @@
 import multipart from "@fastify/multipart";
-import fs from "node:fs";
 import type { FastifyInstance } from "fastify";
 import type {
   ApiResp,
@@ -13,11 +12,11 @@ import type {
 import type { AppConfig } from "../../config/env.js";
 import {
   createDataExport,
-  dataExportZipPath,
   deleteDataExport,
   getDataExport,
   importDataExport,
   listDataExports,
+  openDataExportDownload,
   saveUploadedDataExport,
   updateDataExport,
 } from "./export-service.js";
@@ -75,18 +74,14 @@ export async function registerDataExportRoutes(app: FastifyInstance, config: App
   });
 
   app.get<{ Params: { id: string } }>("/api/exports/:id/download", async (request, reply) => {
-    const item = await getDataExport(config, request.params.id);
-    if (!item) return reply.code(404).send({ success: false, message: "导出记录不存在" });
-    if (item.status !== "ready") return reply.code(400).send({ success: false, message: "导出包尚未就绪" });
-    const zip = dataExportZipPath(config, request.params.id);
-    if (!fs.existsSync(zip)) return reply.code(404).send({ success: false, message: "导出 zip 文件不存在" });
-    const stat = await fs.promises.stat(zip);
-    if (!stat.isFile()) return reply.code(404).send({ success: false, message: "导出 zip 文件不存在" });
+    const archive = await openDataExportDownload(config, request.params.id);
+    if (archive.status === "missing") return reply.code(404).send({ success: false, message: "导出记录不存在" });
+    if (archive.status === "not-ready") return reply.code(400).send({ success: false, message: "导出包尚未就绪" });
     reply
       .type("application/zip")
-      .header("Content-Length", stat.size.toString())
-      .header("Content-Disposition", `attachment; filename="${item.zipFileName}"; filename*=UTF-8''${encodeURIComponent(item.zipFileName)}`);
-    return fs.createReadStream(zip);
+      .header("Content-Length", archive.size.toString())
+      .header("Content-Disposition", `attachment; filename="${archive.fileName}"; filename*=UTF-8''${encodeURIComponent(archive.fileName)}`);
+    return archive.stream;
   });
 
   app.post<{ Params: { id: string }; Body: ImportDataExportDto; Reply: ApiResp<DataImportResultDto> }>("/api/exports/:id/import", async (request, reply) => {

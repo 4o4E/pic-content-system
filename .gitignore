@@ -11,3 +11,4 @@ data
 coverage
 *.tsbuildinfo
 packages/backend/prisma/generated
+.workspace/

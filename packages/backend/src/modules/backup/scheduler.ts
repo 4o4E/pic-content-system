@@ -3,11 +3,13 @@ import type { FastifyInstance } from "fastify";
 import fs from "node:fs";
 import path from "node:path";
 import type { AppConfig } from "../../config/env.js";
-import { createDataExportAndWait, dataExportZipPath } from "../export/export-service.js";
+import { createScheduledDataExport, dataExportZipPath, pruneScheduledDataExports } from "../export/export-service.js";
+
+const BACKUP_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 
 interface RunScheduledBackupOptions {
   now?: Date;
-  createExport?: typeof createDataExportAndWait;
+  createExport?: typeof createScheduledDataExport;
 }
 
 export interface ScheduledBackupResult {
@@ -15,6 +17,7 @@ export interface ScheduledBackupResult {
   sourceFile: string;
   targetFile: string;
   sizeBytes: number;
+  cleanupError?: unknown;
 }
 
 function errorMessage(cause: unknown) {
@@ -46,33 +49,34 @@ export async function runScheduledBackup(config: AppConfig, options: RunSchedule
   if (!config.scheduledBackup) return undefined;
   const targetDir = await ensureBackupDirectory(config.scheduledBackup.directory);
   const startedAt = options.now ?? new Date();
-  const createExport = options.createExport ?? createDataExportAndWait;
+  const createExport = options.createExport ?? createScheduledDataExport;
   const timestamp = formatScheduledBackupTimestamp(startedAt);
-  const item = await createExport(config, {
-    name: `定时备份 ${timestamp}`,
-    note: "定时备份任务自动创建",
-  });
-  if (item.status !== "ready") throw new Error(`导出未就绪：${item.status}`);
+  const result = await createExport(
+    config,
+    { name: `定时备份 ${timestamp}`, note: "定时备份任务自动创建" },
+    async (item) => {
+      const sourceFile = dataExportZipPath(config, item.id);
+      const targetFile = path.join(targetDir, `pic-content-backup-${timestamp}-${item.id}.zip`);
+      const tempTargetFile = `${targetFile}.tmp-${process.pid}-${Date.now()}`;
 
-  const sourceFile = dataExportZipPath(config, item.id);
-  const targetFile = path.join(targetDir, `pic-content-backup-${timestamp}-${item.id}.zip`);
-  const tempTargetFile = `${targetFile}.tmp-${process.pid}-${Date.now()}`;
+      try {
+        await fs.promises.copyFile(sourceFile, tempTargetFile);
+        await fs.promises.rename(tempTargetFile, targetFile);
+      } catch (cause) {
+        await fs.promises.rm(tempTargetFile, { force: true }).catch(() => undefined);
+        throw new Error(`备份文件复制失败：${errorMessage(cause)}`);
+      }
+
+      return { exportId: item.id, sourceFile, targetFile, sizeBytes: item.zipSizeBytes };
+    },
+  );
 
   try {
-    await fs.promises.copyFile(sourceFile, tempTargetFile);
-    await fs.promises.rename(tempTargetFile, targetFile);
-  } catch (cause) {
-    await fs.promises.rm(tempTargetFile, { force: true }).catch(() => undefined);
-    throw new Error(`备份文件复制失败：${errorMessage(cause)}`);
+    await pruneScheduledDataExports(config, targetDir, result.exportId, (options.now?.getTime() ?? Date.now()) - BACKUP_RETENTION_MS);
+    return result;
+  } catch (cleanupError) {
+    return { ...result, cleanupError };
   }
-
-  const stat = await fs.promises.stat(targetFile);
-  return {
-    exportId: item.id,
-    sourceFile,
-    targetFile,
-    sizeBytes: stat.size,
-  };
 }
 
 export function registerScheduledBackup(app: FastifyInstance, config: AppConfig): ScheduledTask | undefined {
@@ -92,6 +96,7 @@ export function registerScheduledBackup(app: FastifyInstance, config: AppConfig)
         const result = await runScheduledBackup(config);
         if (result) {
           app.log.info({ exportId: result.exportId, targetFile: result.targetFile, sizeBytes: result.sizeBytes }, "定时备份完成");
+          if (result.cleanupError) app.log.error({ err: result.cleanupError }, "清理过期自动备份失败");
         }
       } catch (cause) {
         app.log.error({ err: cause }, "定时备份失败");
